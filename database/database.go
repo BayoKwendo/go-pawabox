@@ -16,6 +16,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// VerificationCode represents one row from verification
+type VerificationCode struct {
+	ID      int64
+	Msisdn  string
+	Code    string
+	Expired int64 // unix seconds
+	Created int64 // unix seconds
+	Status  int
+}
+
 type Config struct {
 	Production struct {
 		Postgres struct {
@@ -133,7 +143,7 @@ func ConnectPostgres(configPath string) error {
 		}
 
 		globalPool = pool
-		log.Println("✅ PostgreSQL connection pool established with optimized settings")
+		// log.Println("✅ PostgreSQL connection pool established with optimized settings")
 
 		// Log initial pool stats
 		stats := pool.Stat()
@@ -273,6 +283,27 @@ func (db *Database) CheckTransaction(ctx context.Context, transactionID string) 
 
 func (db *Database) UpdateUserAviatorBalInfoLucky(ctx context.Context, amount float64, msisdn, name string) (int64, error) {
 	query := `UPDATE "Player" 
+              SET name = $1,
+				  monetary = monetary + $2,
+				  balance = balance + $3
+              WHERE msisdn = $4`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	result, err := conn.Exec(ctx, query, name, amount, amount, msisdn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update user %s: %w", msisdn, err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
+func (db *Database) UpdateUserInfo(ctx context.Context, msisdn, name string) (int64, error) {
+	query := `UPDATE "Player" 
               SET name = $1
               WHERE msisdn = $2`
 
@@ -332,6 +363,172 @@ func (db *Database) CheckUser(ctx context.Context, msisdn string) (map[string]in
 	// Now use scanRowsToSingleMap which works with pgx.Rows
 	return db.scanRowsToSingleMap(rows)
 
+}
+
+// bet History
+func (db *Database) CheckHistory(ctx context.Context, msisdn string, startDate, endDate *string) ([]map[string]interface{}, error) {
+	var query string
+	var args []interface{}
+
+	args = append(args, msisdn) // $1 for msisdn
+
+	// Log for debugging
+
+	if startDate != nil && endDate != nil {
+		logrus.Infof("GetGames request: %+v", startDate)
+		// Filter by date range
+		query = `SELECT * 
+		         FROM "Bets" 
+		         WHERE msisdn = $1 
+		           AND date_created BETWEEN $2 AND $3
+		         ORDER BY id DESC LIMIT 100`
+		args = append(args, *startDate, *endDate) // $2, $3
+	} else {
+		// No date filter
+		query = `SELECT * 
+		         FROM "Bets" 
+		         WHERE msisdn = $1 
+		         ORDER BY id DESC LIMIT 10`
+	}
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	return db.scanRowsToMap(rows)
+}
+
+// bet History
+func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDate, endDate *string) ([]map[string]interface{}, error) {
+	var query string
+	var args []interface{}
+
+	args = append(args, msisdn) // $1 for msisdn
+
+	// Log for debugging
+	if startDate != nil && endDate != nil {
+		logrus.Infof("GetGames request: %+v", startDate)
+		// Filter by date range
+		query = `SELECT c.*, p.msisdn  
+					FROM "CustomerLogs" c 
+					INNER JOIN "Player" p ON c.customer_id = p.id::text  
+					WHERE p.msisdn = $1 
+					AND c.date_created BETWEEN $2 AND $3
+					ORDER BY c.id DESC LIMIT 100`
+		args = append(args, *startDate, *endDate) // $2, $3
+	} else {
+		// No date filter
+		query = `SELECT 
+					c.*, 
+					p.msisdn  
+				FROM "CustomerLogs" c 
+				INNER JOIN "Player" p ON c.customer_id = p.id::text  
+				WHERE p.msisdn = $1 
+				ORDER BY c.id DESC 
+				LIMIT 10;`
+	}
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	return db.scanRowsToMap(rows)
+}
+
+func (db *Database) CheckWithdrawal(ctx context.Context, msisdn string, startDate, endDate *string) ([]map[string]interface{}, error) {
+	var query string
+	var args []interface{}
+
+	args = append(args, msisdn) // $1 for msisdn
+
+	// Log for debugging
+
+	if startDate != nil && endDate != nil {
+		logrus.Infof("GetGames request: %+v", startDate)
+		// Filter by date range
+		query = `SELECT * 
+		         FROM "withdrawals" 
+		         WHERE msisdn = $1 
+		           AND date_created BETWEEN $2 AND $3
+		         ORDER BY id DESC LIMIT 100`
+		args = append(args, *startDate, *endDate) // $2, $3
+	} else {
+		// No date filter
+		query = `SELECT * 
+		         FROM "withdrawals" 
+		         WHERE msisdn = $1 
+		         ORDER BY id DESC LIMIT 10`
+	}
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	return db.scanRowsToMap(rows)
+}
+
+func (db *Database) CheckDeposits(ctx context.Context, msisdn string, startDate, endDate *string) ([]map[string]interface{}, error) {
+	var query string
+	var args []interface{}
+
+	args = append(args, msisdn) // $1 for msisdn
+
+	// Log for debugging
+
+	if startDate != nil && endDate != nil {
+		logrus.Infof("GetGames request: %+v", startDate)
+		// Filter by date range
+		query = `SELECT * 
+		         FROM "deposit" 
+		         WHERE msisdn = $1 
+		           AND date_created BETWEEN $2 AND $3
+		         ORDER BY id DESC LIMIT 100`
+		args = append(args, *startDate, *endDate) // $2, $3
+	} else {
+		// No date filter
+		query = `SELECT * 
+		         FROM "deposit" 
+		         WHERE msisdn = $1 
+		         ORDER BY id DESC LIMIT 10`
+	}
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	return db.scanRowsToMap(rows)
 }
 
 // CheckBets gets user's bets
@@ -753,10 +950,10 @@ func (db *Database) UpdateUser(ctx context.Context, name string, mvalue interfac
 }
 
 // UpdateUserRTP updates user RTP
-func (db *Database) UpdateUserRTP(ctx context.Context, id int64) (int64, error) {
+func (db *Database) UpdateUserRTP(ctx context.Context, amount float64, id int64) (int64, error) {
 	query := `UPDATE "Player" 
-			 SET rtp_player = (payout / CASE WHEN total_bets = 0 THEN 1 ELSE total_bets END) * 100 
-			 WHERE id = $1`
+			 SET is_free = 'NO', balance = balance - $1, rtp_player = (payout / CASE WHEN total_bets = 0 THEN 1 ELSE total_bets END) * 100 
+			 WHERE id = $2`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -764,7 +961,7 @@ func (db *Database) UpdateUserRTP(ctx context.Context, id int64) (int64, error) 
 	}
 	defer conn.Release()
 
-	result, err := conn.Exec(ctx, query, id)
+	result, err := conn.Exec(ctx, query, amount, id)
 	if err != nil {
 		return 0, fmt.Errorf("failed to update user rtp: %w", err)
 	}
@@ -820,10 +1017,10 @@ func (db *Database) UpdateUserBet(ctx context.Context, mvalue float64, id int64)
 }
 
 // CreateBet creates a new bet
-func (db *Database) CreateBet(ctx context.Context, msisdn, selectedChoice string, amount float64, result, reference, betStatus, betType, channel string) (int64, error) {
+func (db *Database) CreateBet(ctx context.Context, msisdn, selectedChoice string, amount float64, result, reference, betStatus, betType, gameCatID, gameName, channel string) (int64, error) {
 	query := `INSERT INTO "Bets" 
-			 (channel, bet_type, result_status, results, reference, amount, msisdn, selected_number) 
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+			 (game_cat_id, game_name,channel, bet_type, result_status, results, reference, amount, msisdn, selected_number) 
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,$10)`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -831,9 +1028,31 @@ func (db *Database) CreateBet(ctx context.Context, msisdn, selectedChoice string
 	}
 	defer conn.Release()
 
-	resultExec, err := conn.Exec(ctx, query, channel, betType, betStatus, result, reference, amount, msisdn, selectedChoice)
+	resultExec, err := conn.Exec(ctx, query, gameCatID, gameName, channel, betType, betStatus, result, reference, amount, msisdn, selectedChoice)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create bet: %w", err)
+	}
+
+	return resultExec.RowsAffected(), nil
+}
+
+// InsertVerification inserts a new verification code
+func (db *Database) InsertVerification(ctx context.Context, msisdn, code string, expired int64, created int64) (int64, error) {
+	query := `
+		INSERT INTO verification 
+		(msisdn, code, expired, created)
+		VALUES ($1, $2, $3, $4)
+	`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	resultExec, err := conn.Exec(ctx, query, msisdn, code, expired, created)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert verification code: %w", err)
 	}
 
 	return resultExec.RowsAffected(), nil
@@ -959,6 +1178,89 @@ func (db *Database) CheckJackpotWinner(ctx context.Context) (map[string]interfac
 	// Now use scanRowsToSingleMap which works with pgx.Rows
 	return db.scanRowsToSingleMap(rows)
 
+}
+
+// GetOTPVerified returns a single verification row that hasn't expired (expired > now)
+func (db *Database) GetOTPVerified(ctx context.Context, msisdn, code string, now int64) (map[string]interface{}, error) {
+	query := `
+		SELECT *
+		FROM verification
+		WHERE msisdn = $1 AND code = $2 AND expired > $3
+		LIMIT 1
+	`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, query, msisdn, code, now)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute GetOTPVerified query: %w", err)
+	}
+	defer rows.Close()
+
+	return db.scanRowsToSingleMap(rows)
+}
+
+// GetOTPChecked returns a single verification row with status = 0 (unused)
+func (db *Database) GetOTPChecked(ctx context.Context, msisdn, code string) (map[string]interface{}, error) {
+	query := `
+		SELECT *
+		FROM verification
+		WHERE status = 0 AND msisdn = $1 AND code = $2
+		LIMIT 1
+	`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, query, msisdn, code)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute GetOTPChecked query: %w", err)
+	}
+	defer rows.Close()
+
+	return db.scanRowsToSingleMap(rows)
+}
+
+// UpdateIntoVerification marks the verification as used (status = 1) and returns affected rows
+func (db *Database) UpdateIntoVerification(ctx context.Context, id int32) (int64, error) {
+	query := `UPDATE verification SET status = 1 WHERE id = $1`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	res, err := conn.Exec(ctx, query, id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to execute UpdateIntoVerification: %w", err)
+	}
+
+	return res.RowsAffected(), nil
+}
+
+func (db *Database) UpdateIntoVerificationOld(ctx context.Context, msisdn string) (int64, error) {
+	query := `UPDATE verification SET status = 1 WHERE status = 0 and msisdn = $1`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	res, err := conn.Exec(ctx, query, msisdn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to execute UpdateIntoVerification: %w", err)
+	}
+
+	return res.RowsAffected(), nil
 }
 
 // CheckBasketLucky checks basket
@@ -1153,6 +1455,39 @@ func (db *Database) InsertIntoDepositLuckyRequestBonus(ctx context.Context, depo
 
 	rowsAffected := result.RowsAffected()
 	log.Printf("Bonus deposit request inserted: ref=%s, rows_affected=%d", reference, rowsAffected)
+
+	return rowsAffected, nil
+}
+
+// InsertIntoDepositLuckyRequestComplete inserts a deposit request similar to the Python async version
+func (db *Database) InsertIntoDepositLuckyRequestComplete(
+	ctx context.Context,
+	transactionID, description, game, carrier, channel, gameCatID string,
+	amount float64,
+	msisdn, selectedBox, reference string,
+) (int64, error) {
+
+	query := `INSERT INTO deposit_requests
+        (gateway, status, transaction_id, description, game, carrier, channel, game_cat_id, amount, msisdn, selected_box, reference)
+        VALUES ('direct deposit', 'success', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)` // equivalent to MySQL INSERT IGNORE
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		log.Printf("Error acquiring connection: %v", err)
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	params := []interface{}{transactionID, description, game, carrier, channel, gameCatID, amount, msisdn, selectedBox, reference}
+
+	result, err := conn.Exec(ctx, query, params...)
+	if err != nil {
+		log.Printf("Error inserting deposit request: %v", err)
+		return 0, fmt.Errorf("failed to insert deposit request: %w", err)
+	}
+
+	rowsAffected := result.RowsAffected()
+	log.Printf("Deposit request inserted: ref=%s, rows_affected=%d", reference, rowsAffected)
 
 	return rowsAffected, nil
 }
@@ -1788,8 +2123,6 @@ func (db *Database) InsertIntoDepositLuckyRequest(
 	amount float64,
 	msisdn, selectedBox, reference, channel string,
 ) (int64, error) {
-
-	log.Printf("Updating house wins: %s", msisdn)
 
 	query := `INSERT INTO "deposit_requests" 
           (ussd, game, carrier, channel, game_cat_id, amount, msisdn, selected_box, reference) 

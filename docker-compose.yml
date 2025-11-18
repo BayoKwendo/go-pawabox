@@ -1,8 +1,7 @@
-version: '3.7'
+version: "3.7"
 services:
   power_ke_go:
     restart: always
     network_mode: host
     build: .
-    container_name: box_ke
-    
+    container_name: box_ke_go

@@ -18,82 +18,73 @@ import (
 )
 
 func main() {
-	// initialize logger
+	// Initialize logger
 	logger := config.NewLogger()
-	logrus.SetLevel(logrus.InfoLevel)
-	_ = logger // logger is used by packages via config package
-	// 1. Initialize database connection
-	logrus.Info("📦 Initializing database connection...")
+	logrus.SetLevel(logrus.WarnLevel) // Lower verbosity for high-load
+
+	_ = logger
+
+	// Connect to database
+	logrus.Info("📦 Connecting to database...")
 	if err := database.ConnectPostgres("config.yml"); err != nil {
-		logrus.Fatalf("❌ Failed to connect to database: %v", err)
+		logrus.Fatalf("❌ Database connection failed: %v", err)
 	}
 	defer database.Close()
-	logrus.Info("✅ Database connected successfully")
-
-	// 2. Create database instance
 	db := database.NewDatabase()
+	logrus.Info("✅ Database connected")
 
-	// 3. Initialize services
-	logrus.Info("📦 Initializing services...")
+	// Initialize services
 	luckyService := services.NewLuckyNumberService(db)
-
 	controllers.InitLuckyNumberService(db)
+	logrus.Info("✅ Services initialized")
 
-	logrus.Info("✅ Services initialized successfully")
-
-	// 4. Start background cleanup for inactive players
+	// Create Fiber app with Prefork enabled (uses all CPU cores)
 	app := fiber.New(fiber.Config{
-		IdleTimeout:  60 * time.Second,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		AppName:      "Lucky Number Game API",
+		Prefork:           true,
+		IdleTimeout:       60 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		AppName:           "Lucky Number Game API",
+		ReduceMemoryUsage: true,
 	})
 
-	// middlewares
-	app.Use(func(c *fiber.Ctx) error {
-		start := time.Now()
-
-		defer func() {
-			duration := time.Since(start)
-			logrus.WithFields(logrus.Fields{
-				"method":   c.Method(),
-				"path":     c.Path(),
-				"duration": duration.String(),
-				"status":   c.Response().StatusCode,
-			}).Info("Request completed")
-
-			// Log slow requests
-			if duration > 500*time.Millisecond {
-				logrus.WithFields(logrus.Fields{
-					"method":   c.Method(),
-					"path":     c.Path(),
-					"duration": duration.String(),
-				}).Warn("Slow request detected")
-			}
-		}()
-
-		return c.Next()
-	})
-
+	// Recover from panics
 	app.Use(recover.New())
+
+	// CORS
 	app.Use(fibercors.New(fibercors.Config{
 		AllowOrigins: "*",
 		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
 		AllowHeaders: "Content-Type, Authorization",
 	}))
 
-	// Inject services into context for route handlers
+	// Minimal request logger to reduce overhead
 	app.Use(func(c *fiber.Ctx) error {
-		// Store services in context for route handlers to access
+		start := time.Now()
+		err := c.Next()
+		duration := time.Since(start)
+
+		if duration > 500*time.Millisecond {
+			logrus.WithFields(logrus.Fields{
+				"method":   c.Method(),
+				"path":     c.Path(),
+				"duration": duration,
+			}).Warn("Slow request detected")
+		}
+		return err
+	})
+
+	// Inject services into context
+	app.Use(func(c *fiber.Ctx) error {
 		c.Locals("luckyService", luckyService)
 		c.Locals("db", db)
 		return c.Next()
 	})
 
-	// register routes
+	// Register routes
 	routes.RegisterRoutes(app)
 
-	// Test endpoint to verify everything is working
+	// Health check endpoint
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"status":    "healthy",
@@ -102,16 +93,15 @@ func main() {
 		})
 	})
 
-	logrus.Info("🚀 Starting server on port 3007...")
-
-	// graceful shutdown
+	// Start server in a goroutine
 	go func() {
+		logrus.Info("🚀 Server running on port 3007...")
 		if err := app.Listen(":3007"); err != nil {
-			logrus.Fatalf("❌ Failed to start server: %v", err)
+			logrus.Fatalf("❌ Server failed: %v", err)
 		}
 	}()
 
-	// wait for signal
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt)
 	<-quit
@@ -121,9 +111,9 @@ func main() {
 	defer cancel()
 
 	if err := app.Shutdown(); err != nil {
-		logrus.Errorf("❌ Error during shutdown: %v", err)
+		logrus.Errorf("❌ Shutdown error: %v", err)
 	}
 
 	<-ctx.Done()
-	logrus.Info("✅ Server gracefully stopped")
+	logrus.Info("✅ Server stopped gracefully")
 }

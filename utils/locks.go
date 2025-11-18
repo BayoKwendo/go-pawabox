@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 var userLocks = struct {
@@ -240,6 +243,59 @@ func ToBool(value interface{}) bool {
 	}
 }
 
+// JWTMiddleware verifies the JWT and sets claims in c.Locals("user")
+func JWTMiddleware() fiber.Handler {
+	secret := JWT_SECRET
+
+	return func(c *fiber.Ctx) error {
+		authHeader := c.Get("x-access-token")
+		if authHeader == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"Status":        false,
+				"StatusCode":    1,
+				"StatusMessage": "missing Authorization header",
+			})
+		}
+
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"Status":        false,
+				"StatusCode":    1,
+				"StatusMessage": "invalid Authorization header format",
+			})
+		}
+
+		tokenString := parts[1]
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			// ensure token method is HMAC
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(secret), nil
+		})
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"Status":        false,
+				"StatusCode":    1,
+				"StatusMessage": "invalid token",
+			})
+		}
+
+		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+			c.Locals("user", claims) // store claims for handlers
+			return c.Next()
+		}
+
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"Status":        false,
+			"StatusCode":    1,
+			"StatusMessage": "invalid or expired token",
+		})
+	}
+}
+
 // ToSQLFloat converts to float64 suitable for SQL (handles NaN, Inf)
 func ToSQLFloat(value interface{}) interface{} {
 	f := ToFloat64(value)
@@ -250,6 +306,8 @@ func ToSQLFloat(value interface{}) interface{} {
 
 	return f
 }
+
+var JWT_SECRET = "sdjffjjf83488fdfnfnbbnfbnmd20304483e@u3rhnfhfsu8@##UJjdjdjjJHDDHDHJSMWHSHHHD@*EUDHFHH"
 
 var Texts = map[string]map[string]string{
 	"results": {
@@ -300,3 +358,31 @@ Ingiza nambari yako ya siri
 Bonyeza 1 kuthibitisha na kuanza mchezo`,
 	},
 }
+
+// Extract the core token verification logic from your middleware
+func VerifyJWTToken(tokenString string) (jwt.MapClaims, error) {
+	secret := JWT_SECRET
+
+	if tokenString == "" {
+		return nil, fmt.Errorf("missing token")
+	}
+
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// ensure token method is HMAC
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("invalid token: %v", err)
+	}
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		return claims, nil
+	}
+
+	return nil, fmt.Errorf("invalid or expired token")
+}
+
+// Helper function to extract token from various sources

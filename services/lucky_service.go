@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fiberapp/database"
 	"fiberapp/utils"
 	"fmt"
@@ -14,7 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 )
 
 // LuckyNumberService handles the lucky number game logic
@@ -23,6 +26,30 @@ type LuckyNumberService struct {
 	db          *database.Database // Your database client
 	playersData map[int64]*PlayerData
 	texts       map[string]map[string]string // SMS templates
+}
+
+type Bet struct {
+	ID             int64                 `json:"id"`
+	MSISDN         string                `json:"msisdn"`
+	Amount         float64               `json:"amount"`
+	ResultStatus   string                `json:"result_status"`
+	Game           string                `json:"game"`
+	Channel        string                `json:"channel"`
+	SelectedNumber string                `json:"selected_number"`
+	Results        map[int]BetResultItem `json:"results"`
+	DateCreated    time.Time             `json:"date_created"`
+	Status         string                `json:"status"`
+	Reference      string                `json:"reference"`
+	Narrative      string                `json:"narrative"`
+	WinAmount      float64               `json:"win_amount"`
+	BetType        string                `json:"bet_type"`
+	LastUpdatedOn  time.Time             `json:"last_updated_on"`
+}
+
+// Nested struct for results map
+type BetResultItem struct {
+	Value float64 `json:"value"`
+	Item  string  `json:"item"` // store as string to handle both numbers and text (like "Smart TV")
 }
 
 type GenerateWinAmountsParams struct {
@@ -80,9 +107,20 @@ type PlayerData struct {
 }
 
 // PlaceBetResult represents the result of a bet placement
+
 type PlaceBetResult struct {
-	FreeBet bool
-	Message string
+	GameResult PlaceBetResultDisplay `json:"GameResult"` // JSON string
+	FreeBet    string                `json:"FreeBet"`
+	Message    string                `json:"Message"`
+}
+
+type PlaceBetResultDisplay struct {
+	Boxes         map[string]WinAmount `json:"Boxes"` // JSON string
+	ResultStatus  string               `json:"ResultStatus"`
+	JackPot       string               `json:"JackPot"`
+	GameID        string               `json:"GameID"`
+	SelectedBox   string               `json:"SelectedBox"`
+	ResultMessage string               `json:"ResultMessage"`
 }
 
 // NewLuckyNumberService creates a new LuckyNumberService instance
@@ -128,20 +166,308 @@ func (s *LuckyNumberService) CheckGame() (interface{}, error) {
 	return s.db.CheckGames(ctx)
 }
 
+// VerifyOTP verifies an OTP and returns remaining seconds until expiry (ExpireIn).
+// Returns (0, error) on invalid/expired OTP or other errors.
+func (s *LuckyNumberService) VerifyOTP(msisdn, otp string) (int64, error) {
+	if s == nil || s.db == nil {
+		log.Printf("PANIC PREVENTION: s=%p, s.db=%p", s, s.db)
+		return 0, fmt.Errorf("service or database not initialized")
+	}
+
+	ctx := context.Background()
+	now := time.Now().Unix() // seconds
+
+	// Step 1 — Check if there is an unused OTP (status = 0)
+	checked, err := s.db.GetOTPChecked(ctx, msisdn, otp)
+	if err != nil {
+		logrus.Errorf("GetOTPChecked error: %v", err)
+		return 0, err
+	}
+	if checked == nil {
+		// invalid otp
+		logrus.Warnf("Invalid OTP for msisdn=%s", msisdn)
+		return 0, fmt.Errorf("invalid otp")
+	}
+
+	// Step 2 — Verify expiry (expired > now)
+	verified, err := s.db.GetOTPVerified(ctx, msisdn, otp, now)
+	if err != nil {
+		logrus.Errorf("GetOTPVerified error: %v", err)
+		return 0, err
+	}
+
+	// Step 3 — Mark OTP as used (status = 1) using id from checked row
+
+	if _, err := s.db.UpdateIntoVerification(ctx, checked["id"].(int32)); err != nil {
+		logrus.Errorf("UpdateIntoVerification error: %v", err)
+		return 0, err
+	}
+
+	// Step 4 — If verified == nil → expired
+	if verified == nil {
+		logrus.Warnf("OTP expired for msisdn=%s", msisdn)
+		return 0, fmt.Errorf("otp expired")
+	}
+
+	// Compute remaining seconds until expiry
+	expiredVal, ok := verified["expired"]
+	if !ok {
+		// If the column is missing, treat as success but no expiry info.
+		return 0, nil
+	}
+
+	var expiredSec int64
+	switch v := expiredVal.(type) {
+	case int64:
+		expiredSec = v
+	case int:
+		expiredSec = int64(v)
+	case float64:
+		expiredSec = int64(v)
+	case string:
+		// attempt parse if stored as string
+		var parsed int64
+		_, err := fmt.Sscan(v, &parsed)
+		if err == nil {
+			expiredSec = parsed
+		} else {
+			// if it's a timestamp string, try parsing RFC3339
+			if t, perr := time.Parse(time.RFC3339, v); perr == nil {
+				expiredSec = t.Unix()
+			} else {
+				// unknown format
+				expiredSec = 0
+			}
+		}
+	default:
+		expiredSec = 0
+	}
+
+	remain := expiredSec - now
+	if remain < 0 {
+		// expired (this branch should be rare because GetOTPVerified already checks expired > now)
+		return 0, fmt.Errorf("otp expired")
+	}
+
+	// success: return remaining seconds until expiry
+	return remain, nil
+}
+
 func (s *LuckyNumberService) CheckUser(msisdn string) (map[string]interface{}, error) {
 	if s == nil || s.db == nil {
 		log.Printf("PANIC PREVENTION: s=%p, s.db=%p", s, s.db)
 		return nil, fmt.Errorf("service or database not initialized")
 	}
+	ctx := context.Background()
+
+	user, err := s.db.CheckUser(ctx, msisdn)
+	if err != nil {
+		logrus.Errorf("Error checking user: %v", err)
+		return nil, err
+	}
+	logrus.Infof("user already : %s", user)
+
+	// Create user if doesn't exist
+	if user == nil {
+		carrier := s.getMNOCategory(msisdn)
+		_, err := s.db.CreateUser(ctx, carrier, msisdn)
+		if err != nil {
+			logrus.Errorf("Error creating user: %v", err)
+			return nil, err
+		}
+		// Get the newly created user
+		user, err = s.db.CheckUser(ctx, msisdn)
+		if err != nil {
+			logrus.Errorf("Error getting new user: %v", err)
+			return nil, err
+		}
+		return user, nil
+	} else {
+		return user, nil
+	}
+}
+
+func (s *LuckyNumberService) GetDeposits(msisdn string, startDate, endDate string) ([]map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
 
 	ctx := context.Background()
-	return s.db.CheckUser(ctx, msisdn)
+
+	var startPtr, endPtr *string
+
+	if startDate != "" {
+		startPtr = &startDate
+	}
+	if endDate != "" {
+		endPtr = &endDate
+	}
+	// Call DB method with date range
+	history, err := s.db.CheckDeposits(ctx, msisdn, startPtr, endPtr)
+	if err != nil {
+		logrus.Errorf("Error checking history for msisdn %s: %v", msisdn, err)
+		return nil, err
+	}
+
+	return history, nil
+}
+
+func (s *LuckyNumberService) GetWithdrawals(msisdn string, startDate, endDate string) ([]map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
+
+	ctx := context.Background()
+
+	var startPtr, endPtr *string
+
+	if startDate != "" {
+		startPtr = &startDate
+	}
+	if endDate != "" {
+		endPtr = &endDate
+	}
+	// Call DB method with date range
+	history, err := s.db.CheckWithdrawal(ctx, msisdn, startPtr, endPtr)
+	if err != nil {
+		logrus.Errorf("Error checking history for msisdn %s: %v", msisdn, err)
+		return nil, err
+	}
+
+	return history, nil
+}
+
+func (s *LuckyNumberService) GetGameHistory(msisdn string, startDate, endDate string) ([]map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
+
+	ctx := context.Background()
+
+	var startPtr, endPtr *string
+
+	if startDate != "" {
+		startPtr = &startDate
+	}
+	if endDate != "" {
+		endPtr = &endDate
+	}
+	// Call DB method with date range
+	history, err := s.db.CheckGameHistory(ctx, msisdn, startPtr, endPtr)
+	if err != nil {
+		logrus.Errorf("Error checking history for msisdn %s: %v", msisdn, err)
+		return nil, err
+	}
+
+	return history, nil
+}
+
+func (s *LuckyNumberService) GetHistory(msisdn string, startDate, endDate string) ([]map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
+
+	ctx := context.Background()
+
+	var startPtr, endPtr *string
+
+	if startDate != "" {
+		startPtr = &startDate
+	}
+	if endDate != "" {
+		endPtr = &endDate
+	}
+	// Call DB method with date range
+	history, err := s.db.CheckHistory(ctx, msisdn, startPtr, endPtr)
+	if err != nil {
+		logrus.Errorf("Error checking history for msisdn %s: %v", msisdn, err)
+		return nil, err
+	}
+
+	return history, nil
 }
 
 func (s *LuckyNumberService) InsertLogs(msisdn, sessionId, serviceCode, ussdString string) error {
 	ctx := context.Background()
 	_, err := s.db.InsertUSSDLogs(ctx, msisdn, sessionId, serviceCode, ussdString)
 	return err
+}
+
+func (s *LuckyNumberService) UpdateUser(msisdn, name string) error {
+	ctx := context.Background()
+	_, err := s.db.UpdateUserInfo(ctx, msisdn, name)
+	return err
+}
+
+func (s *LuckyNumberService) InsertVerification(msisdn string, code string, expired int64, created int64) error {
+	ctx := context.Background()
+
+	_, err := s.db.InsertVerification(ctx, msisdn, code, expired, created)
+	return err
+}
+func (s *LuckyNumberService) IniatatDeposit(msisdn string, amount float64, channel string) (PlaceBetResult, error) {
+	// NOTE: removed s.mu.Lock() / defer s.mu.Unlock() — do not serialize DB ops globally.
+
+	// Give each request a reasonable timeout so slow DB calls don't hang forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	// 1) Check user
+	user, err := s.db.CheckUser(ctx, msisdn)
+	if err != nil {
+		logrus.Errorf("CheckUser error: %v", err)
+		return PlaceBetResult{}, err
+	}
+	mnoCategory := s.getMNOCategory(msisdn)
+	// 2) Create user if missing (do this synchronously)
+	if user == nil {
+		if _, err := s.db.CreateUser(ctx, mnoCategory, msisdn); err != nil {
+			logrus.Errorf("CreateUser error: %v", err)
+			return PlaceBetResult{}, err
+		}
+		// optionally re-fetch user if you need returned fields
+	}
+	// 3) compute adjusted amount (synchronous because it likely reads DB)
+	adjustedAmount, err := s.adjustBetAmount(ctx, msisdn, amount)
+	if err != nil {
+		logrus.Errorf("adjustBetAmount error: %v", err)
+		return PlaceBetResult{}, err
+	}
+	// 4) generate id / game id
+	gameID := s.randomString(10)
+	// 5) Run the two inserts concurrently: InsertIntoDepositLuckyRequest and InsertSTK
+	g, egCtx := errgroup.WithContext(ctx)
+
+	// Insert deposit request
+	g.Go(func() error {
+		// Use the db method which should use the pool and acquire a connection per call.
+		_, err := s.db.InsertIntoDepositLuckyRequest(egCtx, "", "", mnoCategory, "0", adjustedAmount, msisdn, "0", gameID, channel)
+		if err != nil {
+			logrus.Errorf("InsertIntoDepositLuckyRequest error: %v", err)
+			return err
+		}
+		return nil
+	})
+	// Insert STK record concurrently
+	g.Go(func() error {
+		_, err := s.db.InsertSTK(egCtx, "", mnoCategory, gameID, msisdn, adjustedAmount, "00000")
+		if err != nil {
+			logrus.Errorf("InsertSTK error: %v", err)
+			return err
+		}
+		return nil
+	})
+	// wait for both
+	if err := g.Wait(); err != nil {
+		// one (or both) failed
+		return PlaceBetResult{}, err
+	}
+
+	// Success
+	return PlaceBetResult{FreeBet: "false", Message: "Kukamilisha BET weka M-Pesa PIN yako."}, nil
 }
 
 // PlaceBet handles the main betting logic
@@ -151,20 +477,22 @@ func (s *LuckyNumberService) PlaceBet(ussd string, name string, gameCatID string
 
 	ctx := context.Background()
 
-	// Check user
+	// 1. Check user
 	user, err := s.db.CheckUser(ctx, msisdn)
 	if err != nil {
 		return PlaceBetResult{}, err
 	}
-
 	mnoCategory := s.getMNOCategory(msisdn)
 
-	// Create attempted user if doesn't exist
+	// 2. Create user if not exists
 	if user == nil {
-		_, err := s.db.CreateUserAttempted(ctx, mnoCategory, msisdn)
-
-		logrus.Errorf("Error placing bet: %v", err)
-
+		_, err := s.db.CreateUser(ctx, mnoCategory, msisdn)
+		if err != nil {
+			logrus.Errorf("Error creating user: %v", err)
+			return PlaceBetResult{}, err
+		}
+		// Refresh user
+		user, err = s.db.CheckUser(ctx, msisdn)
 		if err != nil {
 			return PlaceBetResult{}, err
 		}
@@ -172,53 +500,82 @@ func (s *LuckyNumberService) PlaceBet(ussd string, name string, gameCatID string
 
 	gameID := s.randomString(10)
 
-	// Check if user has active free bet
+	// 3. Handle free bet
 	if user != nil && s.hasActiveFreeBet(user) {
-		totalBetsHist, err := s.db.CheckBets(ctx, msisdn)
-		if err != nil {
-			return PlaceBetResult{}, err
+		logrus.Infof("Freebet is working: %v", user)
+
+		var totalBetsHist []Bet // adjust type to your CheckBets return type
+		var wg sync.WaitGroup
+		var errCheckBets, errUpdateUser error
+
+		wg.Add(2)
+		// Run CheckBets in parallel
+		go func() {
+			defer wg.Done()
+			_, errCheckBets = s.db.CheckBets(ctx, msisdn)
+		}()
+		// Run UpdateUserLucky in parallel
+		go func() {
+			defer wg.Done()
+			_, errUpdateUser = s.db.UpdateUserLucky(ctx, msisdn)
+		}()
+
+		wg.Wait()
+
+		if errCheckBets != nil {
+			return PlaceBetResult{}, errCheckBets
 		}
-		_, err = s.db.UpdateUserLucky(ctx, msisdn)
-		if err != nil {
-			return PlaceBetResult{}, err
+		if errUpdateUser != nil {
+			return PlaceBetResult{}, errUpdateUser
 		}
 
-		// Refresh user data
+		// Refresh user data after updates
 		user, err = s.db.CheckUser(ctx, msisdn)
 		if err != nil {
 			return PlaceBetResult{}, err
 		}
 
-		// Play game immediately for free bet
-		err = s.playGame(ctx, gameID, "", name, totalBetsHist, gameCatID, user, msisdn, amount, selectedNumber, gameID, "free_bet", "free bet", channel, ussd, name)
+		// Play game immediately
+		game_result, err := s.playGame(ctx, totalBetsHist, gameCatID, user, msisdn, amount, selectedNumber, gameID,
+			"free_bet", channel, ussd, name)
 		if err != nil {
 			return PlaceBetResult{}, err
 		}
 
-		return PlaceBetResult{FreeBet: true, Message: "Free Bet placed successful! Jaribu Tena."}, nil
+		return PlaceBetResult{GameResult: game_result, FreeBet: "true", Message: "Free Bet  Successful Placed"}, nil
 	} else {
-		// Regular bet - adjust amount based on previous bet
-		adjustedAmount, err := s.adjustBetAmount(ctx, msisdn, amount)
+		num := user["balance"].(pgtype.Numeric)
+
+		var totalBetsHist, err = s.db.CheckBets(ctx, msisdn)
 		if err != nil {
 			return PlaceBetResult{}, err
 		}
 
-		_, err = s.db.UpdateUserLuckyFree(ctx, msisdn)
-		if err != nil {
-			return PlaceBetResult{}, err
-		}
+		f, _ := num.Float64Value()
+		balance := f.Float64
+		if balance >= amount {
 
-		_, err = s.db.InsertIntoDepositLuckyRequest(ctx, ussd, name, mnoCategory, gameCatID, adjustedAmount, msisdn, selectedNumber, gameID, channel)
-		if err != nil {
-			return PlaceBetResult{}, err
-		}
+			game_result, err := s.playGame(ctx,
+				totalBetsHist,
+				gameCatID, // Use toString instead of type assertion
+				user,
+				msisdn,
+				amount, // Use toFloat64 instead of type assertion
+				selectedNumber,
+				gameID,
+				"normal",
+				channel,
+				"",
+				name)
 
-		_, err = s.db.InsertSTK(ctx, name, mnoCategory, gameID, msisdn, adjustedAmount, "00000")
-		if err != nil {
-			return PlaceBetResult{}, err
-		}
+			if err != nil {
+				return PlaceBetResult{}, err
+			}
 
-		return PlaceBetResult{FreeBet: false, Message: "Kukamilisha BET weka M-Pesa PIN yako."}, nil
+			return PlaceBetResult{GameResult: game_result, FreeBet: "false", Message: "Bet Successful Placed"}, nil
+		} else {
+			return PlaceBetResult{}, fmt.Errorf("insufficient balance")
+		}
 	}
 }
 
@@ -277,7 +634,7 @@ func (s *LuckyNumberService) HandleDepositAndGame(data map[string]interface{}) e
 		ussd, _ := stkUSSD["ussd"].(string)
 		gameName, _ := stkUSSD["game"].(string)
 
-		err = s.playGame(ctx, transactionID, "", name, nil, gameCatID, user, msisdn, amount, selectedNumber, reference, "normal", "deposit game", channel, ussd, gameName)
+		_, err = s.playGame(ctx, nil, gameCatID, user, msisdn, amount, selectedNumber, reference, "normal", channel, ussd, gameName)
 		if err != nil {
 			return err
 		}
@@ -287,7 +644,7 @@ func (s *LuckyNumberService) HandleDepositAndGame(data map[string]interface{}) e
 }
 
 // SettleDeposit handles deposit settlement
-func (s *LuckyNumberService) SettleDeposit(name, transactionID, reference string) (map[string]interface{}, error) {
+func (s *LuckyNumberService) SettleDeposit(msisdn string, amount float64, name, transactionID, betType, reference string, description, ussd, shortcode, gameName string) (map[string]interface{}, error) {
 	ctx := context.Background()
 
 	// Check if transaction already exists
@@ -296,66 +653,184 @@ func (s *LuckyNumberService) SettleDeposit(name, transactionID, reference string
 		logrus.Errorf("Error checking transaction: %v", err)
 		return nil, err
 	}
+
 	logrus.Infof("Transaction already : %s", transactionExists)
 
-	if transactionExists != nil {
-		logrus.Infof("Transaction already exists: %s", transactionID)
-		return nil, fmt.Errorf("transaction already exists")
-	}
-	// Check deposit request
-	depositRequest, err := s.db.CheckDepositRequestLucky(ctx, reference)
-	if err != nil {
-		logrus.Errorf("Error checking deposit request: %v", err)
+	if len(transactionExists) > 0 {
+		logrus.Info("No transaction found, safe to insert")
+		logrus.Infof("Transaction already exists: %d records", transactionID)
+		logrus.Infof("Transaction already exists: %d records", len(transactionExists))
 		return nil, err
-	}
+		// handle duplicate
+	} else {
+		logrus.Infof("Transaction already : %s", transactionExists)
 
-	if depositRequest == nil {
-		logrus.Errorf("Deposit request not found for reference: %s", reference)
-		return nil, fmt.Errorf("deposit request not found")
-	}
-
-	logrus.Infof("depositRequest already : %s", depositRequest)
-
-	msisdn := utils.ToString(depositRequest["msisdn"])
-	if msisdn == "" {
-		logrus.Errorf("MSISDN not found in deposit request: %s", reference)
-		return nil, fmt.Errorf("msisdn not found in deposit request")
-	}
-
-	// Check if user exists
-	user, err := s.db.CheckUser(ctx, msisdn)
-	if err != nil {
-		logrus.Errorf("Error checking user: %v", err)
-		return nil, err
-	}
-	logrus.Infof("user already : %s", user)
-
-	// Create user if doesn't exist
-	if user == nil {
-		carrier := s.getMNOCategory(msisdn)
-		_, err := s.db.CreateUser(ctx, carrier, msisdn)
+		if transactionExists != nil {
+			logrus.Infof("Transaction already exists: %s", transactionID)
+			return nil, fmt.Errorf("transaction already exists")
+		}
+		// Check deposit request
+		depositRequest, err := s.db.CheckDepositRequestLucky(ctx, reference)
 		if err != nil {
-			logrus.Errorf("Error creating user: %v", err)
+			logrus.Errorf("Error checking deposit request: %v", err)
 			return nil, err
 		}
-		// Get the newly created user
-		user, err = s.db.CheckUser(ctx, msisdn)
+
+		// Check if user exists
+		user, err := s.db.CheckUser(ctx, msisdn)
 		if err != nil {
-			logrus.Errorf("Error getting new user: %v", err)
+			logrus.Errorf("Error checking user: %v", err)
 			return nil, err
 		}
-	}
-	amount := (depositRequest["amount"]).(float64)
-	// Update user balance
-	_, err = s.db.UpdateUserAviatorBalInfoLucky(ctx, amount, msisdn, name)
-	if err != nil {
-		logrus.Errorf("Error updating user balance: %v", err)
-		return nil, err
-	}
-	logrus.Infof("Deposit settled successfully: reference=%s, msisdn=%s, amount=%.2f",
-		reference, msisdn, amount)
+		logrus.Infof("user already : %s", user)
 
-	return depositRequest, nil
+		// Create user if doesn't exist
+		if user == nil {
+			carrier := s.getMNOCategory(msisdn)
+			_, err := s.db.CreateUser(ctx, carrier, msisdn)
+			if err != nil {
+				logrus.Errorf("Error creating user: %v", err)
+				return nil, err
+			}
+			// Get the newly created user
+			user, err = s.db.CheckUser(ctx, msisdn)
+			if err != nil {
+				logrus.Errorf("Error getting new user: %v", err)
+				return nil, err
+			}
+		}
+
+		var gameCatID = utils.ToString(depositRequest["game_cat_id"]) // Use toString instead of type assertion
+		var selectedNumber = utils.ToString(depositRequest["selected_box"])
+		var channel = utils.ToString(depositRequest["channel"])
+
+		// Update user balance
+		errs := make(chan error, 5)
+
+		senderID := "Funua Pesa"
+		num := user["balance"].(pgtype.Numeric)
+
+		f, _ := num.Float64Value()
+		balance := f.Float64
+		// Now you can add
+
+		if depositRequest == nil {
+			reference := s.randomString(10)
+
+			var gameCatID = "0" // Use toString instead of type assertion
+			var selectedNumber = "0"
+			var channel = "direct"
+
+			total := balance + amount // var userBalance float64 = 250.0
+
+			message := fmt.Sprintf(
+				"Account balance yako ni: Ksh.%.2f\n\nBONYEZA *463# UKAMILISHE BET YAKO",
+				total,
+			)
+
+			// logrus.Errorf("Deposit request not found for reference: %s", reference)
+
+			logrus.Infof("depositRequest already : %s", depositRequest)
+
+			go func() {
+				_, err := s.db.UpdateUserAviatorBalInfoLucky(ctx, amount, msisdn, name)
+				errs <- err
+			}()
+
+			go func() {
+				_, err := s.db.InsertIntoDepositLuckyRequestComplete(ctx, transactionID, description, gameName, s.getMNOCategory(msisdn), channel, gameCatID, amount, msisdn, selectedNumber, reference)
+				errs <- err
+				// }
+			}()
+
+			go func() {
+				_, err := s.db.DeleteUserAttempted(ctx, msisdn)
+				errs <- err
+			}()
+
+			go func() {
+				_, err := s.db.CreateDepositRecordLucky(ctx, msisdn, amount, transactionID, shortcode, name, reference, betType)
+				errs <- err
+			}()
+			go func() {
+				_, err := s.db.InsertCustomerLogsPawaBoxKe(ctx, amount, "deposit", utils.ToString(user["id"]), "customer deposit: lucky", reference)
+				errs <- err
+			}()
+			go func() {
+				_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+				errs <- err
+			}()
+			// collect errors
+			for i := 0; i < 5; i++ {
+				if err := <-errs; err != nil {
+					logrus.Errorf("DB operation failed: %v", err)
+					// Note: cannot rollback since they are already executed individually
+				}
+			}
+		} else {
+
+			msisdn := utils.ToString(depositRequest["msisdn"])
+			if msisdn == "" {
+				logrus.Errorf("MSISDN not found in deposit request: %s", reference)
+				return nil, fmt.Errorf("msisdn not found in deposit request")
+			}
+			logrus.Infof("depositRequest already : %s", depositRequest)
+
+			amount := (depositRequest["amount"]).(float64)
+
+			total := balance + amount // var userBalance float64 = 250.0
+
+			message := fmt.Sprintf(
+				"Account balance yako ni: Ksh.%.2f\n\nBONYEZA *463# UKAMILISHE BET YAKO",
+				total,
+			)
+
+			go func() {
+				_, err := s.db.UpdateUserAviatorBalInfoLucky(ctx, amount, msisdn, name)
+				errs <- err
+			}()
+
+			go func() {
+				if betType == "normal" {
+					_, err := s.db.UpdateAviatorDepositRequestLucky(ctx, transactionID, reference, description)
+					errs <- err
+				} else {
+					_, err := s.db.InsertIntoDepositLuckyRequestBonus(ctx, betType, ussd, gameName, s.getMNOCategory(msisdn), gameCatID, amount, msisdn, selectedNumber, reference, channel)
+					errs <- err
+				}
+			}()
+
+			go func() {
+				_, err := s.db.DeleteUserAttempted(ctx, msisdn)
+				errs <- err
+			}()
+
+			go func() {
+				_, err := s.db.CreateDepositRecordLucky(ctx, msisdn, amount, transactionID, shortcode, name, reference, betType)
+				errs <- err
+			}()
+			go func() {
+				_, err := s.db.InsertCustomerLogsPawaBoxKe(ctx, amount, "deposit", utils.ToString(user["id"]), "customer deposit: lucky", reference)
+				errs <- err
+			}()
+			go func() {
+				_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+				errs <- err
+			}()
+			// collect errors
+			for i := 0; i < 5; i++ {
+				if err := <-errs; err != nil {
+					logrus.Errorf("DB operation failed: %v", err)
+					// Note: cannot rollback since they are already executed individually
+				}
+			}
+		}
+
+		logrus.Infof("Deposit settled successfully: reference=%s, msisdn=%s, amount=%.2f",
+			reference, msisdn, amount)
+
+		return depositRequest, nil
+	}
 }
 
 // ProcessBetAndPlayGame handles the main game logic
@@ -363,86 +838,91 @@ func (s *LuckyNumberService) ProcessBetAndPlayGame(data map[string]interface{}) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ctx := context.Background()
 	ref := utils.ToString(data["reference"])
-
 	// Settle deposit first
-	deposit, err := s.SettleDeposit(
+	_, err := s.SettleDeposit(
+		utils.ToString(data["msisdn"]),
+		utils.ToFloat64(data["amount"]),
 		utils.ToString(data["name"]),
 		utils.ToString(data["transaction_id"]),
+		"normal",
 		ref,
-	)
+		utils.ToString(data["description"]),
+		utils.ToString(data["ussd"]),
+		utils.ToString(data["shortcode"]),
+		utils.ToString(data["game_name"]))
+
 	if err != nil {
 		logrus.Errorf("Failed to settle deposit: %v", err)
 		return nil, fmt.Errorf("failed to settle deposit: %w", err)
 	}
 
-	logrus.Infof("Deposit settled: %+v", deposit)
+	// logrus.Infof("Deposit settled: %+v", deposit)
 
-	if deposit != nil {
-		msisdn := utils.ToString(deposit["msisdn"])
+	// if deposit != nil {
+	// 	msisdn := utils.ToString(deposit["msisdn"])
 
-		// Run user and bet history checks concurrently
-		var user map[string]interface{}
-		var betshist []map[string]interface{}
-		var userErr, betHistErr error
+	// 	// Run user and bet history checks concurrently
+	// 	var user map[string]interface{}
+	// 	var betshist []map[string]interface{}
+	// 	var userErr, betHistErr error
 
-		var wg sync.WaitGroup
-		wg.Add(2)
+	// 	var wg sync.WaitGroup
+	// 	wg.Add(2)
 
-		// Check user concurrently
-		go func() {
-			defer wg.Done()
-			user, userErr = s.db.CheckUser(ctx, msisdn)
-		}()
+	// 	// Check user concurrently
+	// 	go func() {
+	// 		defer wg.Done()
+	// 		user, userErr = s.db.CheckUser(ctx, msisdn)
+	// 	}()
 
-		// Check bet history concurrently
-		go func() {
-			defer wg.Done()
-			betshist, betHistErr = s.db.CheckBets(ctx, msisdn)
-		}()
+	// 	// Check bet history concurrently
+	// 	go func() {
+	// 		defer wg.Done()
+	// 		betshist, betHistErr = s.db.CheckBets(ctx, msisdn)
+	// 	}()
 
-		wg.Wait()
+	// 	wg.Wait()
 
-		// Check for errors
-		if userErr != nil {
-			return nil, fmt.Errorf("failed to check user: %w", userErr)
-		}
-		if betHistErr != nil {
-			return nil, fmt.Errorf("failed to check bet history: %w", betHistErr)
-		}
+	// 	// Check for errors
+	// 	if userErr != nil {
+	// 		return nil, fmt.Errorf("failed to check user: %w", userErr)
+	// 	}
+	// 	if betHistErr != nil {
+	// 		return nil, fmt.Errorf("failed to check bet history: %w", betHistErr)
+	// 	}
 
-		// Extract data from the request
-		err := s.playGame(ctx,
-			utils.ToString(data["transaction_id"]),
-			utils.ToString(data["shortcode"]),
-			utils.ToString(data["name"]),
-			betshist,
-			utils.ToString(deposit["game_cat_id"]), // Use toString instead of type assertion
-			user,
-			msisdn,
-			(deposit["amount"]).(float64), // Use toFloat64 instead of type assertion
-			utils.ToString(deposit["selected_box"]),
-			ref,
-			"normal",
-			utils.ToString(data["description"]),
-			utils.ToString(deposit["channel"]),
-			utils.ToString(data["ussd"]),      // Use toString instead of type assertion
-			utils.ToString(data["game_name"])) // Use toString instead of type assertion
+	// 	// Extract data from the request
+	// err := s.playGame(ctx,
+	// 	utils.ToString(data["transaction_id"]),
+	// 	utils.ToString(data["shortcode"]),
+	// 	utils.ToString(data["name"]),
+	// 	betshist,
+	// 	utils.ToString(deposit["game_cat_id"]), // Use toString instead of type assertion
+	// 	user,
+	// 	msisdn,
+	// 	(deposit["amount"]).(float64), // Use toFloat64 instead of type assertion
+	// 	utils.ToString(deposit["selected_box"]),
+	// 	ref,
+	// 	"normal",
+	// 	utils.ToString(data["description"]),
+	// 	utils.ToString(deposit["channel"]),
+	// 	utils.ToString(data["ussd"]),      // Use toString instead of type assertion
+	// 	utils.ToString(data["game_name"])) // Use toString instead of type assertion
 
-		if err != nil {
-			return nil, fmt.Errorf("failed to play game: %w", err)
-		}
-		return nil, err
+	// 	if err != nil {
+	// 		return nil, fmt.Errorf("failed to play game: %w", err)
+	// 	}
+	return nil, err
 
-		// return map[string]interface{}{
-		// 	"Status":        200,
-		// 	"StatusCode":    0,
-		// 	"StatusMessage": "Success",
-		// }, nil
-	}
+	// return map[string]interface{}{
+	// 	"Status":        200,
+	// 	"StatusCode":    0,
+	// 	"StatusMessage": "Success",
+	// }, nil
+	// }
 
-	return nil, fmt.Errorf("deposit settlement failed")
+	// return nil, fmt.Errorf("deposit settlement failed")
 }
 
 // Helper methods
@@ -458,11 +938,12 @@ func (s *LuckyNumberService) randomString(length int) string {
 func (s *LuckyNumberService) getMNOCategory(msisdn string) string {
 	return "SAFARICOM" // Simplified for Kenya
 }
-
 func (s *LuckyNumberService) hasActiveFreeBet(user map[string]interface{}) bool {
 	isFree, ok1 := user["is_free"].(string)
 	freeBet, ok2 := user["free_bet"].(float64)
-	freebetExpiry, ok3 := user["freebet_expiry"].(string)
+	expiryTime, ok3 := user["freebet_expiry"].(time.Time)
+
+	logrus.Infof("Freebet is working: is_free=%s, free_bet=%.2f, freebet_expiry=%v", isFree, freeBet, expiryTime)
 
 	if !ok1 || !ok2 || !ok3 {
 		return false
@@ -472,12 +953,8 @@ func (s *LuckyNumberService) hasActiveFreeBet(user map[string]interface{}) bool 
 		return false
 	}
 
-	// Check if free bet hasn't expired
-	if freebetExpiry != "" {
-		expiryTime, err := time.Parse("2006-01-02 15:04:05", freebetExpiry)
-		if err == nil && time.Now().Before(expiryTime) {
-			return true
-		}
+	if time.Now().Before(expiryTime) {
+		return true
 	}
 
 	return false
@@ -503,43 +980,81 @@ func (s *LuckyNumberService) adjustBetAmount(ctx context.Context, msisdn string,
 }
 
 // playGame contains the main game logic
-func (s *LuckyNumberService) playGame(ctx context.Context, transactionID, shortcode, name string, history interface{}, gameCatID string, player map[string]interface{}, msisdn string, betAmount float64, selectedNumber, reference, betType, description, channel, ussd, gameName string) error {
+func (s *LuckyNumberService) playGame(ctx context.Context, history interface{}, gameCatID string, player map[string]interface{}, msisdn string, betAmount float64, selectedNumber, reference, betType, channel, ussd, gameName string) (PlaceBetResultDisplay, error) {
 	// Get settings
-	setting, err := s.db.CheckSetting(ctx)
-	if err != nil {
-		return err
+	var (
+		setting interface{}
+		game    interface{}
+		kpi     interface{}
+		house   interface{}
+	)
+	var (
+		errSetting, errGame, errKPI, errHouse error
+	)
+	wg := sync.WaitGroup{}
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		setting, errSetting = s.db.CheckSetting(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		game, errGame = s.db.CheckGamePlay(ctx, gameCatID)
+	}()
+
+	go func() {
+		defer wg.Done()
+		kpi, errKPI = s.db.CheckSettingKPI(ctx)
+	}()
+
+	go func() {
+		defer wg.Done()
+		house, errHouse = s.db.CheckHousePawaBoxKe(ctx)
+	}()
+	wg.Wait()
+
+	if errSetting != nil {
+		return PlaceBetResultDisplay{}, errSetting
+	}
+	if errGame != nil {
+		return PlaceBetResultDisplay{}, errGame
+	}
+	if errKPI != nil {
+		return PlaceBetResultDisplay{}, errKPI
+	}
+	if errHouse != nil {
+		return PlaceBetResultDisplay{}, errHouse
 	}
 
-	// Get game info
-	game, err := s.db.CheckGamePlay(ctx, gameCatID)
-	if err != nil {
-		return err
+	// Now you can use setting, game, kpi, house as interface{} and type assert when needed
+
+	houseMap, ok := house.(map[string]interface{})
+	if !ok {
+		return PlaceBetResultDisplay{}, fmt.Errorf("house is not a map")
 	}
 
-	// Get KPI data
-	kpi, err := s.db.CheckSettingKPI(ctx)
-	if err != nil {
-		return err
+	settingMap, ok := setting.(map[string]interface{})
+	if !ok {
+		return PlaceBetResultDisplay{}, fmt.Errorf("setting is not a map")
 	}
-
-	// Get house data
-	house, err := s.db.CheckHousePawaBoxKe(ctx)
-	if err != nil {
-		return err
+	gameMap, ok := game.(map[string]interface{})
+	if !ok {
+		return PlaceBetResultDisplay{}, fmt.Errorf("game is not a map")
 	}
-
+	kpiMap, ok := kpi.(map[string]interface{})
+	if !ok {
+		return PlaceBetResultDisplay{}, fmt.Errorf("kpi is not a map")
+	}
 	// Calculate current RTP
-	totalBets := house["total_bets"].(float64) + betAmount
+	totalBets := houseMap["total_bets"].(float64) + betAmount
 	currentRTP := 0.0
 	if totalBets > 0 {
-		currentRTP = house["total_wins"].(float64) / totalBets
+		currentRTP = houseMap["total_wins"].(float64) / totalBets
 	}
-
-	defaultRTP := setting["default_rtp"].(float64) + setting["jackpot_percentage"].(float64)
+	defaultRTP := settingMap["default_rtp"].(float64) + settingMap["jackpot_percentage"].(float64)
 	if currentRTP > defaultRTP {
 		currentRTP = defaultRTP
 	}
-
 	// Calculate player RTP
 	playerTotalBets := player["total_bets"].(float64)
 	// playerRTP := 0.0
@@ -548,53 +1063,63 @@ func (s *LuckyNumberService) playGame(ctx context.Context, transactionID, shortc
 	// }
 
 	// Register player and record bet
-	err = s.bet(ctx, reference, player["id"].(int64), playerTotalBets, betAmount)
+	err := s.bet(ctx, reference, player["id"].(int64), playerTotalBets, betAmount)
 	if err != nil {
-		return err
+		return PlaceBetResultDisplay{}, err
 	}
 
 	// Calculate basket and house values
-	globalRTP := setting["default_rtp"].(float64) + setting["adjustmentable_rtp"].(float64)
+	globalRTP := settingMap["default_rtp"].(float64) + settingMap["adjustmentable_rtp"].(float64)
 	basketValue := betAmount * (globalRTP / 100)
-	houseValue := (setting["vig_percentage"].(float64) / 100) * betAmount
-	jackpotValue := (setting["jackpot_percentage"].(float64) / 100) * betAmount
+	houseValue := (settingMap["vig_percentage"].(float64) / 100) * betAmount
+	jackpotValue := (settingMap["jackpot_percentage"].(float64) / 100) * betAmount
 
 	// Update jackpot for specific games
-	gameInit := game["name_init"].(string)
+	gameInit := gameMap["name_init"].(string)
 	if s.isJackpotGame(gameInit) {
 		_, err = s.db.UpdateJackpotKitNameInit(ctx, jackpotValue, gameInit)
 		if err != nil {
-			return err
+			return PlaceBetResultDisplay{}, err
 		}
 	}
 
 	// Calculate taxes
-	withholdTaxJackpot := (setting["withholding"].(float64) / 100) * jackpotValue
-	exciseTaxAmount := (setting["excise_duty"].(float64) / 100) * betAmount
+	withholdTaxJackpot := (settingMap["withholding"].(float64) / 100) * jackpotValue
+	exciseTaxAmount := (settingMap["excise_duty"].(float64) / 100) * betAmount
 	exciseTaxAmountRound := round(exciseTaxAmount)
 
 	// Handle deposit based on bet type
-	var depositTask error
-	if betType == "normal" {
-		_, depositTask = s.db.UpdateAviatorDepositRequestLucky(ctx, transactionID, reference, description)
+	var depositTask func() error
+	if betType == "free_bet" {
+		depositTask = func() error {
+			_, err := s.db.InsertIntoDepositLuckyRequestBonus(ctx, betType, ussd, gameName,
+				s.getMNOCategory(msisdn), gameCatID, betAmount, msisdn, selectedNumber, reference, channel)
+			return err
+		}
 	} else {
-		_, depositTask = s.db.InsertIntoDepositLuckyRequestBonus(ctx, betType, ussd, gameName, s.getMNOCategory(msisdn), gameCatID, betAmount, msisdn, selectedNumber, reference, channel)
+		depositTask = func() error { return nil }
+	}
+
+	var updateUserRTPTask func() error
+	if betType == "normal" {
+		updateUserRTPTask = func() error {
+			_, err := s.db.UpdateUserRTP(ctx, betAmount, player["id"].(int64))
+			return err
+		}
+	} else {
+		updateUserRTPTask = func() error { return nil }
 	}
 
 	// Execute all database operations
 	tasks := []func() error{
-		func() error { return depositTask },
+		depositTask,
+		// func() error { return depositTask },
 		func() error {
 			_, err := s.db.UpdateKPIHandle(ctx, betAmount)
 			return err
 		},
-
 		func() error {
 			_, err := s.db.UpdateKPIPayouts(ctx, jackpotValue, round(withholdTaxJackpot), exciseTaxAmountRound)
-			return err
-		},
-		func() error {
-			_, err := s.db.DeleteUserAttempted(ctx, msisdn)
 			return err
 		},
 		func() error {
@@ -606,19 +1131,12 @@ func (s *LuckyNumberService) playGame(ctx context.Context, transactionID, shortc
 			return err
 		},
 		func() error {
-			_, err := s.db.CreateDepositRecordLucky(ctx, msisdn, betAmount, transactionID, shortcode, name, reference, betType)
-			return err
-		},
-		func() error {
 			_, err := s.db.UpdateJackpotKit(ctx, jackpotValue)
 			return err
 		},
+		updateUserRTPTask,
 		func() error {
-			_, err := s.db.UpdateUserRTP(ctx, player["id"].(int64))
-			return err
-		},
-		func() error {
-			_, err := s.db.CreateBet(ctx, msisdn, selectedNumber, betAmount, "", reference, "Pending", betType, channel)
+			_, err := s.db.CreateBet(ctx, msisdn, selectedNumber, betAmount, "", reference, "Pending", betType, gameCatID, gameName, channel)
 			return err
 		},
 		func() error {
@@ -657,26 +1175,39 @@ func (s *LuckyNumberService) playGame(ctx context.Context, transactionID, shortc
 			_, err := s.db.InsertHouseBasketLogs(ctx, 0, basketValue, basketValue, fmt.Sprintf("%.2f added to the basket:- game id %s", basketValue, reference))
 			return err
 		},
-		func() error {
-			_, err = s.db.InsertCustomerLogsPawaBoxKe(ctx, betAmount, "deposit", utils.ToString(player["id"]), "customer deposit: lucky", reference)
-			return err
-		},
+	}
+	// Run all tasks in parallel
+	errs := make(chan error, len(tasks))
+	wg.Add(len(tasks))
+	for _, task := range tasks {
+		t := task // capture loop variable
+		go func() {
+			defer wg.Done()
+			if err := t(); err != nil {
+				errs <- err
+			}
+		}()
 	}
 
-	for _, task := range tasks {
-		if err := task(); err != nil {
-			return err
+	// Wait for all tasks to finish
+	wg.Wait()
+	close(errs)
+
+	// Check for errors
+	for err := range errs {
+		if err != nil {
+			return PlaceBetResultDisplay{}, err
 		}
 	}
 
 	// Check for jackpot winner
 	jackpotWinner, err := s.db.CheckJackpotWinner(ctx)
 	if err != nil {
-		return err
+		return PlaceBetResultDisplay{}, err
 	}
 
 	// Determine game outcome
-	minLossCount := rand.Intn(int(setting["min_loss_count"].(float64))) + 1
+	minLossCount := rand.Intn(int(settingMap["min_loss_count"].(float64))) + 1
 
 	playerFrequency := int64(0)
 	if freq, ok := player["frequency"].(int32); ok {
@@ -694,9 +1225,9 @@ func (s *LuckyNumberService) playGame(ctx context.Context, transactionID, shortc
 
 	// Handle jackpot win condition
 	if playerFrequency > 10 && playerLostCount > int64(minLossCount) && jackpotWinner != nil {
-		return s.handleJackpotWin(ctx, player, msisdn, betAmount, selectedNumber, reference, setting, game, kpi, jackpotWinner)
+		return PlaceBetResultDisplay{}, s.handleJackpotWin(ctx, player, msisdn, betAmount, selectedNumber, reference, settingMap, gameMap, kpiMap, jackpotWinner)
 	} else {
-		return s.handleNormalGame(ctx, player, msisdn, betAmount, selectedNumber, reference, setting, game, kpi, minLossCount)
+		return s.handleNormalGame(ctx, player, msisdn, betAmount, selectedNumber, reference, settingMap, gameMap, kpiMap, minLossCount)
 	}
 }
 
@@ -856,7 +1387,7 @@ func (s *LuckyNumberService) handleJackpotWin(ctx context.Context, player map[st
 	return nil
 }
 
-func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[string]interface{}, msisdn string, betAmount float64, selectedNumber, reference string, setting, game, kpi map[string]interface{}, minLossCount int) error {
+func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[string]interface{}, msisdn string, betAmount float64, selectedNumber, reference string, setting, game, kpi map[string]interface{}, minLossCount int) (PlaceBetResultDisplay, error) {
 	// Convert types safely
 	playerID := utils.ToInt64(player["id"])
 	playerLostCount := utils.ToInt64(player["lost_count"])
@@ -902,20 +1433,20 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		RTPOverload:      rtpOverload,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to generate win amounts: %w", err)
+		return PlaceBetResultDisplay{}, fmt.Errorf("failed to generate win amounts: %w", err)
 	}
 
 	logrus.Infof("Win amounts generated: %+v", winAmounts)
 
 	// 🔥 CRITICAL SAFETY CHECKS - Add these lines
 	if winAmounts == nil {
-		return fmt.Errorf("winAmounts is nil after generation")
+		return PlaceBetResultDisplay{}, fmt.Errorf("winAmounts is nil after generation")
 	}
 
 	winAmount, exists := winAmounts[selectedNumber]
 	if !exists {
 		logrus.Errorf("Selected number %s not found in winAmounts: %v", selectedNumber, winAmounts)
-		return fmt.Errorf("selected number %s not found in win amounts", selectedNumber)
+		return PlaceBetResultDisplay{}, fmt.Errorf("selected number %s not found in win amounts", selectedNumber)
 	}
 
 	// Random increment calculation
@@ -974,7 +1505,7 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		// Update bet as win
 		_, err := s.db.UpdateLuckyBetWin(ctx, resultMessage, reference, winAmountValue, "Win")
 		if err != nil {
-			return fmt.Errorf("failed to update lucky bet win: %w", err)
+			return PlaceBetResultDisplay{}, fmt.Errorf("failed to update lucky bet win: %w", err)
 		}
 
 		// Calculate tax
@@ -984,7 +1515,7 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		// Update KPI payouts
 		_, err = s.db.UpdateKPIPayouts(ctx, winAmountValue, withholdTax, 0)
 		if err != nil {
-			return fmt.Errorf("failed to update KPI payouts: %w", err)
+			return PlaceBetResultDisplay{}, fmt.Errorf("failed to update KPI payouts: %w", err)
 		}
 
 		// Update win amounts with tax deducted values - SAFELY
@@ -996,7 +1527,7 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		// Handle win logic
 		err = s.win(ctx, playerID, playerPayout, playerTotalBets, winItem, withholdTax, taxDeductedAmount, winAmountValue, msisdn, reference)
 		if err != nil {
-			return fmt.Errorf("failed to handle win: %w", err)
+			return PlaceBetResultDisplay{}, fmt.Errorf("failed to handle win: %w", err)
 		}
 
 		// Round amounts
@@ -1007,21 +1538,37 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		message := s.createWinMessage(selectedNumber, winAmounts, playerFreeBet, reference, withholding, withholdTax)
 		logrus.Infof("Player MSISDN: %s", msisdn)
 
+		resultd, err := s.ResultDisplay(selectedNumber, winAmounts, playerFreeBet, reference)
+
 		// Queue SMS
 		senderID := "Funua Pesa"
 		_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
 		if err != nil {
-			return fmt.Errorf("failed to insert SMS queue: %w", err)
+			return PlaceBetResultDisplay{}, fmt.Errorf("failed to insert SMS queue: %w", err)
 		}
 
 		// Update RTP
 		_, err = s.db.UpdateHouseLucyNumberHouseCurrentRTP(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to update RTP: %w", err)
+			return PlaceBetResultDisplay{}, fmt.Errorf("failed to update RTP: %w", err)
 		}
 
 		logrus.Infof("Player %s won: %.2f (tax: %.2f)", msisdn, taxDeductedAmount, withholdTax)
-		return nil
+
+		var boxes map[string]WinAmount
+		if err := json.Unmarshal([]byte(resultd), &boxes); err != nil {
+			logrus.Errorf("Failed to unmarshal Boxes JSON: %v", err)
+			return PlaceBetResultDisplay{}, err
+		}
+		mresult := PlaceBetResultDisplay{
+			Boxes:         boxes,
+			ResultStatus:  "Win",
+			JackPot:       "False",
+			GameID:        reference,
+			SelectedBox:   selectedNumber,
+			ResultMessage: message}
+
+		return mresult, nil
 
 	} else {
 		// Player loses - SAFELY update
@@ -1033,7 +1580,7 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		// Handle loss
 		err := s.lose(ctx, playerID, reference, msisdn, playerLostCount, playerTotalLosses, betAmount)
 		if err != nil {
-			return fmt.Errorf("failed to handle loss: %w", err)
+			return PlaceBetResultDisplay{}, fmt.Errorf("failed to handle loss: %w", err)
 		}
 
 		// Build loss message
@@ -1043,27 +1590,46 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		message := s.createLossMessage(selectedNumber, winAmounts, playerFreeBet, reference)
 		logrus.Infof("Player MSISDN: %s", msisdn)
 
+		resultd, err := s.ResultDisplay(selectedNumber, winAmounts, playerFreeBet, reference)
+
 		// Queue SMS
 		senderID := "Funua Pesa"
 		_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
 		if err != nil {
-			return fmt.Errorf("failed to insert SMS queue: %w", err)
+			return PlaceBetResultDisplay{}, fmt.Errorf("failed to insert SMS queue: %w", err)
 		}
 
 		// Update bet as loss
 		_, err = s.db.UpdateLuckyBet(ctx, resultMessage, reference, "Lose")
 		if err != nil {
-			return fmt.Errorf("failed to update lucky bet: %w", err)
+			return PlaceBetResultDisplay{}, fmt.Errorf("failed to update lucky bet: %w", err)
 		}
 
 		// Record lost transaction
 		_, err = s.db.InsertB2BWithdrawalB2B(ctx, reference, msisdn, 0, "Lost")
 		if err != nil {
-			return fmt.Errorf("failed to insert B2B withdrawal: %w", err)
+			return PlaceBetResultDisplay{}, fmt.Errorf("failed to insert B2B withdrawal: %w", err)
+		}
+
+		var boxes map[string]WinAmount
+		if err := json.Unmarshal([]byte(resultd), &boxes); err != nil {
+			logrus.Errorf("Failed to unmarshal Boxes JSON: %v", err)
+			return PlaceBetResultDisplay{}, err
+		}
+
+		mresult := PlaceBetResultDisplay{
+			Boxes:         boxes,
+			ResultStatus:  "Loss",
+			JackPot:       "False",
+			GameID:        reference,
+			SelectedBox:   selectedNumber,
+			ResultMessage: message,
 		}
 
 		logrus.Infof("Player %s lost bet: %.2f", msisdn, betAmount)
-		return nil
+
+		// return struct + nil error
+		return mresult, nil
 	}
 }
 
@@ -1480,6 +2046,30 @@ func (s *LuckyNumberService) createWinMessage(selectedNumber string, winAmounts 
 		int(withholding),
 		FormatToMZN(withholdTax),
 	)
+}
+
+func (s *LuckyNumberService) ResultDisplay(selectedNumber string, winAmounts map[string]WinAmount, freeBet int64, reference string) (string, error) {
+	// Create a slice of keys to sort
+	keys := make([]string, 0, len(winAmounts))
+	for k := range winAmounts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// Build ordered map
+	ordered := make(map[string]WinAmount, len(winAmounts))
+	for _, k := range keys {
+		ordered[k] = winAmounts[k]
+	}
+
+	// Marshal to JSON
+	resultJSON, err := json.Marshal(ordered)
+	if err != nil {
+		return "", err
+	}
+
+	// Convert []byte to string
+	return string(resultJSON), nil
 }
 
 func (s *LuckyNumberService) createLossMessage(selectedNumber string, winAmounts map[string]WinAmount, freeBet int64, reference string) string {
