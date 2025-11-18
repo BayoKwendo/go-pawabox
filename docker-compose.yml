@@ -5,3 +5,13 @@ services:
     network_mode: host
     build: .
     container_name: box_ke_go
+
+
+  power_socket_go:
+    restart: always
+    network_mode: host
+    build:
+      context: ..  # Go one level up
+      dockerfile: socket/Dockerfile  # Path to Dockerfile from context
+
+    container_name: box_socket_go
