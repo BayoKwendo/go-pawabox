@@ -83,7 +83,7 @@ func main() {
 		AppName:               "Lucky Number Game API",
 		EnablePrintRoutes:     false,
 		DisableStartupMessage: true,
-		Prefork:               true,
+		Prefork:               prefork,
 	})
 
 	// ---------- Middlewares ----------

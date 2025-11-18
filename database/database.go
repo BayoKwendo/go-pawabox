@@ -491,6 +491,30 @@ func (db *Database) CheckWithdrawal(ctx context.Context, msisdn string, startDat
 	return db.scanRowsToMap(rows)
 }
 
+func (db *Database) GetWinners(ctx context.Context) ([]map[string]interface{}, error) {
+	var query string
+	var args []interface{}
+
+	// No date filter
+	query = `SELECT DISTINCT ON (msisdn) *
+		FROM withdrawals 
+		ORDER BY msisdn, id DESC 
+		LIMIT 10;`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	return db.scanRowsToMap(rows)
+}
 func (db *Database) CheckDeposits(ctx context.Context, msisdn string, startDate, endDate *string) ([]map[string]interface{}, error) {
 	var query string
 	var args []interface{}

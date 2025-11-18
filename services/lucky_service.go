@@ -339,6 +339,22 @@ func (s *LuckyNumberService) GetWithdrawals(msisdn string, startDate, endDate st
 	return history, nil
 }
 
+func (s *LuckyNumberService) GetWinners() ([]map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
+
+	ctx := context.Background()
+
+	// Call DB method with date range
+	history, err := s.db.GetWinners(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return history, nil
+}
 func (s *LuckyNumberService) GetGameHistory(msisdn string, startDate, endDate string) ([]map[string]interface{}, error) {
 	if s == nil || s.db == nil {
 		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
@@ -405,6 +421,18 @@ func (s *LuckyNumberService) UpdateUser(msisdn, name string) error {
 
 func (s *LuckyNumberService) InsertVerification(msisdn string, code string, expired int64, created int64) error {
 	ctx := context.Background()
+
+	message := fmt.Sprintf(
+		"Your OTP Code is: %s",
+		code,
+	)
+	// Queue SMS
+	senderID := "Funua Pesa"
+	_, er := s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+
+	if er != nil {
+		return fmt.Errorf("failed to insert SMS queue: %w", er)
+	}
 
 	_, err := s.db.InsertVerification(ctx, msisdn, code, expired, created)
 	return err

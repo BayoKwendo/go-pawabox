@@ -367,6 +367,19 @@ func VerifyJWTToken(tokenString string) (jwt.MapClaims, error) {
 		return nil, fmt.Errorf("missing token")
 	}
 
+	// Handle Bearer token format
+	// Remove "Bearer " prefix if present
+	if len(tokenString) > 7 && strings.HasPrefix(strings.ToLower(tokenString), "bearer ") {
+		tokenString = tokenString[7:] // Remove "Bearer " prefix
+	}
+
+	// Trim any whitespace
+	tokenString = strings.TrimSpace(tokenString)
+
+	if tokenString == "" {
+		return nil, fmt.Errorf("missing token after Bearer prefix")
+	}
+
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		// ensure token method is HMAC
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fiberapp/database"
 	"fiberapp/services"
 	"fiberapp/utils"
 	"log"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/sirupsen/logrus"
 	socketio "github.com/zishang520/socket.io/socket"
 )
 
@@ -23,6 +25,18 @@ func main() {
 		AllowOrigins:     "*",
 		AllowCredentials: false,
 	}))
+
+	logrus.Info("📦 Initializing database connection...")
+	// Let database.ConnectPostgres manage pooling config using config.yml.
+	if err := database.ConnectPostgres("config.yml"); err != nil {
+		logrus.Fatalf("❌ Failed to connect to database: %v", err)
+	}
+	defer database.Close()
+	logrus.Info("✅ Database connected successfully")
+
+	db := database.NewDatabase()
+
+	lucky := services.NewLuckyNumberService(db)
 
 	// --- 2. Socket.IO Server Setup ---
 	// Create Socket.IO server instance
@@ -66,12 +80,37 @@ func main() {
 		})
 
 		// Handle message event
+		socket.On("winners", func(data ...any) {
+
+			winner, err := lucky.GetWinners()
+			if err != nil {
+				socket.Emit("error", map[string]interface{}{
+					"Status":        false,
+					"StatusCode":    1,
+					"StatusMessage": err.Error(),
+				})
+				return
+			}
+
+			if winner == nil {
+				winner = []map[string]interface{}{}
+			}
+
+			socket.Emit("winners_list", map[string]interface{}{
+				"Status":        200,
+				"StatusCode":    0,
+				"Data":          winner,
+				"StatusMessage": "Success",
+			})
+
+		})
+
+		// Handle message event
 		socket.On("user", func(data ...any) {
 			if len(data) == 0 {
 				return
 			}
 
-			var lucky *services.LuckyNumberService
 			var tokenString string
 
 			// Extract token from data - data[0] contains the actual message data
@@ -92,6 +131,9 @@ func main() {
 				})
 				return
 			}
+
+			log.Printf("🔌 Disconnected: %s", tokenString)
+
 			if tokenString == "" {
 				socket.Emit("error", map[string]interface{}{
 					"Status":        false,
@@ -112,15 +154,26 @@ func main() {
 				return
 			}
 
-			msisdn := claims["user_id"].(string)
+			msisdn := claims["sub"].(string)
+			log.Printf("🔌 Disconnected: %s", msisdn)
 
 			user, err := lucky.CheckUser(msisdn)
+			if err != nil {
+				socket.Emit("error", map[string]interface{}{
+					"Status":        false,
+					"StatusCode":    1,
+					"StatusMessage": err.Error(),
+				})
+				return
+			}
 
 			socket.Emit("user_info", map[string]interface{}{
 				"Status":        200,
 				"StatusCode":    0,
 				"Data":          user,
-				"StatusMessage": "Success"})
+				"StatusMessage": "Success",
+			})
+
 		})
 
 		// Handle disconnect

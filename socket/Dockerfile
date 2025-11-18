@@ -6,10 +6,10 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY . .
+COPY ../ ./
 
 # Build static binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o main ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o main ./cmdsocket/socket_server.go
 
 # ---- Run stage ----
 FROM alpine:latest
@@ -19,6 +19,6 @@ WORKDIR /app
 COPY --from=builder /app/main .
 COPY --from=builder /app/config.yml .
 
-EXPOSE 3007
+EXPOSE 3006
 
 CMD ["./main"]
