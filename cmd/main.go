@@ -2,18 +2,22 @@ package main
 
 import (
 	"context"
+	"math/rand"
+	"os"
+	"os/signal"
+	"runtime"
+	"strconv"
+	"sync/atomic"
+	"time"
+
 	"fiberapp/config"
 	"fiberapp/controllers"
 	"fiberapp/database"
 	"fiberapp/routes"
 	"fiberapp/services"
-	"os"
-	"os/signal"
-	"runtime"
-	"sync/atomic"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/compress"
 	fibercors "github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/sirupsen/logrus"
@@ -24,61 +28,94 @@ var (
 )
 
 func main() {
-	// Set GOMAXPROCS to utilize all CPU cores
+	// Use all available CPUs
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	// Initialize logger with performance optimizations
+	// ---------- Logger (JSON, no caller) ----------
 	logger := config.NewLogger()
 	logrus.SetLevel(logrus.InfoLevel)
-	logrus.SetReportCaller(false) // Disable caller info for performance
-	_ = logger
+	logrus.SetReportCaller(false)
+	logrus.SetFormatter(&logrus.JSONFormatter{
+		// smaller timestamp format; keep messages compact
+		TimestampFormat: time.RFC3339,
+	})
+	_ = logger // keep existing usage if needed elsewhere
 
-	// 1. Initialize database connection with connection pool optimizations
+	// ---------- Database ----------
 	logrus.Info("📦 Initializing database connection...")
+	// Let database.ConnectPostgres manage pooling config using config.yml.
 	if err := database.ConnectPostgres("config.yml"); err != nil {
 		logrus.Fatalf("❌ Failed to connect to database: %v", err)
 	}
 	defer database.Close()
 	logrus.Info("✅ Database connected successfully")
 
-	// 2. Create database instance
 	db := database.NewDatabase()
 
-	// 3. Initialize services
+	// ---------- Services ----------
 	logrus.Info("📦 Initializing services...")
 	luckyService := services.NewLuckyNumberService(db)
 	controllers.InitLuckyNumberService(db)
 	logrus.Info("✅ Services initialized successfully")
 
-	// 4. Create Fiber app with optimized configuration
+	// ---------- Fiber config (tunable via env) ----------
+	// PREFORK env var enables preforking (good for CPU-bound loads / multiple forks).
+	prefork := os.Getenv("PREFORK") == "true"
+
+	// Concurrency: keep it reasonable so the runtime and kernel don't get overwhelmed.
+	// Tune via env var if needed.
+	defaultConcurrency := runtime.NumCPU() * 1024
+	if v := os.Getenv("FIBER_CONC"); v != "" {
+		// ignore parse error, keep default if invalid
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			defaultConcurrency = parsed
+		}
+	}
+
 	app := fiber.New(fiber.Config{
 		IdleTimeout:           60 * time.Second,
-		ReadTimeout:           10 * time.Second, // Reduced from 15s
-		WriteTimeout:          10 * time.Second, // Reduced from 15s
-		ReadBufferSize:        8192,             // Increased buffer size
-		WriteBufferSize:       8192,             // Increased buffer size
-		Concurrency:           256 * 1024,       // Increased concurrency limit
-		ServerHeader:          "Fiber",          // Simpler header
+		ReadTimeout:           8 * time.Second, // reduced for faster resource release
+		WriteTimeout:          8 * time.Second, // reduced for faster resource release
+		ReadBufferSize:        4096,            // reasonable buffer size
+		WriteBufferSize:       4096,
+		Concurrency:           defaultConcurrency,
+		ServerHeader:          "Fiber",
 		AppName:               "Lucky Number Game API",
-		EnablePrintRoutes:     false, // Disable in production
-		DisableStartupMessage: true,  // We'll log manually
+		EnablePrintRoutes:     false,
+		DisableStartupMessage: true,
+		Prefork:               true,
 	})
 
-	// Optimized middleware chain
+	// ---------- Middlewares ----------
+	// Recover without stack trace in production
 	app.Use(recover.New(recover.Config{
-		EnableStackTrace: false, // Disable stack trace in production
+		EnableStackTrace: false,
 	}))
 
-	// Optimized CORS configuration
+	// Compression to reduce bandwidth and latency (CPU < network cost typically)
+	app.Use(compress.New(compress.Config{
+		Level: compress.LevelDefault,
+	}))
+
+	// Lean CORS
 	app.Use(fibercors.New(fibercors.Config{
 		AllowOrigins:     "*",
 		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
 		AllowHeaders:     "Content-Type, Authorization",
 		AllowCredentials: false,
-		MaxAge:           300, // 5 minutes cache for preflight
+		MaxAge:           600, // increase preflight cache to 10 minutes
 	}))
 
-	// Optimized logging middleware with sampling for high traffic
+	// Light-weight request sampling logger - sampleRateEnv or default 100 (1%)
+	sampleRate := 100 // sample 1 in 100
+	if s := os.Getenv("LOG_SAMPLE_RATE"); s != "" {
+		if parsed, err := strconv.Atoi(s); err == nil && parsed > 0 {
+			sampleRate = parsed
+		}
+	}
+	// Seeded rand for sampling; atomic ensures safe concurrent access on counter
+	rand.Seed(time.Now().UnixNano())
+
 	app.Use(func(c *fiber.Ctx) error {
 		start := time.Now()
 		atomic.AddUint64(&requestCount, 1)
@@ -86,96 +123,89 @@ func main() {
 		err := c.Next()
 
 		duration := time.Since(start)
+		current := atomic.LoadUint64(&requestCount)
 
-		// Sample logging: log only 1% of requests or slow requests
-		currentCount := atomic.LoadUint64(&requestCount)
-		if duration > 500*time.Millisecond || currentCount%100 == 0 {
+		// log either slow requests or probabilistically sample
+		if duration > 500*time.Millisecond || (int(current)%sampleRate == 0) {
+			// keep log fields minimal to reduce allocation
 			logrus.WithFields(logrus.Fields{
-				"method":   c.Method(),
-				"path":     c.Path(),
-				"duration": duration.Milliseconds(), // Use milliseconds for smaller logs
-				"status":   c.Response().StatusCode,
-				"ip":       c.IP(),
-			}).Info("Slow request detected")
+				"m":  c.Method(),
+				"p":  c.Path(),
+				"d":  duration.Milliseconds(),
+				"s":  c.Response().StatusCode(),
+				"ip": c.IP(),
+			}).Info("request")
 		}
-
 		return err
 	})
 
-	// app.Use(func(c *fiber.Ctx) error {
-	// 	start := time.Now()
-
-	// 	defer func() {
-	// 		duration := time.Since(start)
-	// 		logrus.WithFields(logrus.Fields{
-	// 			"method":   c.Method(),
-	// 			"path":     c.Path(),
-	// 			"duration": duration.String(),
-	// 			"status":   c.Response().StatusCode,
-	// 		}).Info("Request completed")
-
-	// 		// Log slow requests
-	// 		if duration > 500*time.Millisecond {
-	// 			logrus.WithFields(logrus.Fields{
-	// 				"method":   c.Method(),
-	// 				"path":     c.Path(),
-	// 				"duration": duration.String(),
-	// 			}).Warn("Slow request detected")
-	// 		}
-	// 	}()
-
-	// 	return c.Next()
-	// })
-	// Efficient context injection using Fiber's Locals (already optimized)
+	// inject shared services into context
 	app.Use(func(c *fiber.Ctx) error {
 		c.Locals("luckyService", luckyService)
 		c.Locals("db", db)
 		return c.Next()
 	})
 
-	// Register routes
+	// ---------- Routes ----------
 	routes.RegisterRoutes(app)
 
-	// Optimized health endpoint
+	// simple health check
 	app.Get("/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
+		// small, fast payload
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
 			"status":    "healthy",
 			"service":   "Lucky Number Game API",
-			"timestamp": time.Now().Unix(), // Use Unix timestamp for faster serialization
+			"timestamp": time.Now().Unix(),
 		})
 	})
 
-	// Prefork for multi-core utilization (enable in production)
-	// Note: Uncomment if you have multiple CPU cores and want maximum performance
-	// app.Settings().Prefork = true
-
-	logrus.Info("🚀 Starting server on port 3007...")
-
-	// Start server in goroutine
-	serverErr := make(chan error, 1)
-	go func() {
-		if err := app.Listen(":3007"); err != nil {
-			serverErr <- err
-		}
-	}()
-
-	// Wait for interrupt signal or server error
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt)
-
-	select {
-	case <-quit:
-		logrus.Info("🛑 Shutting down server...")
-	case err := <-serverErr:
-		logrus.Errorf("❌ Server error: %v", err)
+	// ---------- Start server ----------
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "3007"
 	}
 
-	// Graceful shutdown with timeout
-	_, cancel := context.WithTimeout(context.Background(), 5*time.Second) // Reduced from 10s
+	logrus.Infof("🚀 Starting server on port %s (prefork=%v, concurrency=%d)...", port, prefork, defaultConcurrency)
+
+	// Use signal.NotifyContext to handle shutdowns with a cancellable Context
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	defer stop()
+
+	// Run Listen in goroutine so we can respond to shutdown signals
+	listenErr := make(chan error, 1)
+	go func() {
+		if err := app.Listen(":" + port); err != nil {
+			listenErr <- err
+		}
+		close(listenErr)
+	}()
+
+	// Wait for signal or server error
+	select {
+	case <-ctx.Done():
+		// Received termination signal
+		logrus.Info("🛑 Shutdown signal received")
+	case err := <-listenErr:
+		if err != nil {
+			logrus.Errorf("❌ Server listen error: %v", err)
+		}
+	}
+
+	// Graceful shutdown with timeout (tunable via env)
+	shutdownTimeout := 5 * time.Second
+	if st := os.Getenv("SHUTDOWN_TIMEOUT"); st != "" {
+		if parsed, err := strconv.Atoi(st); err == nil && parsed > 0 {
+			shutdownTimeout = time.Duration(parsed) * time.Second
+		}
+	}
+	_, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	if err := app.Shutdown(); err != nil {
 		logrus.Errorf("❌ Error during shutdown: %v", err)
+	} else {
+		// Wait for any remaining things for a short interval before exiting
+		<-time.After(100 * time.Millisecond)
 	}
 
 	logrus.Info("✅ Server gracefully stopped")
