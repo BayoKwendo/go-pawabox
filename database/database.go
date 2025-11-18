@@ -118,7 +118,7 @@ func ConnectPostgres(configPath string) error {
 		}
 
 		// OPTIMIZE CONNECTION POOL SETTINGS
-		poolConfig.MaxConns = 25                   // Default is 4 - too low for web apps!
+		poolConfig.MaxConns = 100                  // Default is 4 - too low for web apps!
 		poolConfig.MinConns = 5                    // Keep some connections ready
 		poolConfig.MaxConnLifetime = 1 * time.Hour // Recycle connections periodically
 		poolConfig.MaxConnIdleTime = 30 * time.Minute

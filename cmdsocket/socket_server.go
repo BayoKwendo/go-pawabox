@@ -112,14 +112,14 @@ func main() {
 				return
 			}
 
-			// msisdn := claims["user_id"].(string)
+			msisdn := claims["user_id"].(string)
 
-			// user, err := lucky.CheckUser(msisdn)
+			user, err := lucky.CheckUser(msisdn)
 
 			socket.Emit("user_info", map[string]interface{}{
 				"Status":        200,
 				"StatusCode":    0,
-				"Data":          "",
+				"Data":          user,
 				"StatusMessage": "Success"})
 		})
 

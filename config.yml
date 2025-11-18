@@ -1,7 +1,7 @@
 production:
   postgres:
     connection:
-      host: localhost
+      host: 172.16.0.184
       port: 5432
       username: game
       password: 123dss9393weqw
