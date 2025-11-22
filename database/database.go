@@ -118,14 +118,14 @@ func ConnectPostgres(configPath string) error {
 		}
 
 		// OPTIMIZE CONNECTION POOL SETTINGS
-		poolConfig.MaxConns = 25                   // Default is 4 - too low for web apps!
+		poolConfig.MaxConns = 100                  // Default is 4 - too low for web apps!
 		poolConfig.MinConns = 5                    // Keep some connections ready
 		poolConfig.MaxConnLifetime = 1 * time.Hour // Recycle connections periodically
 		poolConfig.MaxConnIdleTime = 30 * time.Minute
 		poolConfig.HealthCheckPeriod = 1 * time.Minute
 
 		// Configure connection timeouts
-		poolConfig.ConnConfig.ConnectTimeout = 5 * time.Second
+		poolConfig.ConnConfig.ConnectTimeout = 10 * time.Second
 		poolConfig.ConnConfig.RuntimeParams["statement_timeout"] = "10000" // 10 seconds
 
 		log.Printf("🔄 Initializing database pool with %d max connections", poolConfig.MaxConns)
@@ -695,7 +695,7 @@ func (db *Database) UpdateJackpotKitNameInit(ctx context.Context, mvalue float64
 
 func (db *Database) UpdateJackpotKity(ctx context.Context, id int) (int64, error) {
 	query := `UPDATE "jackpot_kitty"
-			 SET is_locked = 1 ,kitty = kitty-cost, win_count = win_count+ 1
+			 SET is_locked = 0 ,kitty = kitty-cost, win_count = win_count+ 1
 			 WHERE id = $1`
 
 	conn, err := db.pool.Acquire(ctx)
@@ -1983,7 +1983,7 @@ func (db *Database) InsertIntoWithdrawalsLucky(ctx context.Context, nonAmount, a
 }
 
 // InsertIntoJackPotWinners inserts jackpot winners
-func (db *Database) InsertIntoJackPotWinners(ctx context.Context, taxAmount float64, items string, gameID string, gameName, jackpotCategory string, kittyID int, amount float64, msisdn string) (int64, error) {
+func (db *Database) InsertIntoJackPotWinners(ctx context.Context, taxAmount float64, items string, gameID string, gameName, jackpotCategory string, kittyID string, amount float64, msisdn string) (int64, error) {
 	query := `INSERT INTO "jackpot_winners" 
 			 (tax_amount, items, game_id, game_name, jackpot_category, kitty_id, amount, msisdn, awarded) 
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'yes')`

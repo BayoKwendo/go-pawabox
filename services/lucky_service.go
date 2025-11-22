@@ -1190,9 +1190,10 @@ func (s *LuckyNumberService) playGame(ctx context.Context, history interface{}, 
 	} else if lost, ok := player["lost_count"].(int64); ok {
 		playerLostCount = lost
 	}
-
-	// Handle jackpot win condition
 	if playerFrequency > 10 && playerLostCount > int64(minLossCount) && jackpotWinner != nil {
+
+		// Handle jackpot win condition
+		// if playerFrequency > 10 && jackpotWinner != nil {
 		return s.handleJackpotWin(ctx, player, msisdn, betAmount, utils.ToInt(selectedNumber), reference, settingMap, gameMap, kpiMap, jackpotWinner)
 	} else {
 		return s.handleNormalGame(ctx, player, msisdn, betAmount, selectedNumber, reference, settingMap, gameMap, kpiMap, minLossCount)
@@ -1604,12 +1605,12 @@ func (s *LuckyNumberService) handleJackpotWin(
 	taxDeductedAmount := winAmount - withholdTax
 	// -------------------------------
 
-	g, ctx := errgroup.WithContext(ctx)
+	g, ct := errgroup.WithContext(ctx)
 
 	// 1. Update bet as win
 	g.Go(func() error {
 		_, err := s.db.UpdateLuckyBetWin(
-			ctx,
+			ct,
 			fmt.Sprintf("Box %d wins. Numbers: %+v", selectedNumber, winBoxes),
 			"PAWABOX",
 			reference,
@@ -1622,7 +1623,7 @@ func (s *LuckyNumberService) handleJackpotWin(
 	// 2. Update jackpot entry
 	g.Go(func() error {
 		_, err := s.db.UpdateJackpotKity(
-			ctx,
+			ct,
 			utils.ToInt(jackpotWinner["id"]),
 		)
 		return err
@@ -1631,7 +1632,7 @@ func (s *LuckyNumberService) handleJackpotWin(
 	// 3. Update player loss stats
 	g.Go(func() error {
 		_, err := s.db.UpdatePlayerRestLossJackpot(
-			ctx,
+			ct,
 			winAmount,
 			utils.ToInt(player["id"]),
 		)
@@ -1640,13 +1641,13 @@ func (s *LuckyNumberService) handleJackpotWin(
 	// 4. Insert into Jackpot winners
 	g.Go(func() error {
 		_, err := s.db.InsertIntoJackPotWinners(
-			ctx,
+			ct,
 			taxDeductedAmount,
 			winItem,
 			reference,
 			utils.ToString(game["name"]),
 			utils.ToString(jackpotWinner["item_name"]),
-			utils.ToInt(jackpotWinner["id"]),
+			utils.ToString(jackpotWinner["id"]),
 			winAmount,
 			msisdn,
 		)
@@ -2401,7 +2402,7 @@ func (s *LuckyNumberService) createWinMessage(selectedNumber string, winAmounts 
 	)
 }
 
-func (s *LuckyNumberService) createJackpotMessage(selectedNumber string, winAmounts map[string]WinAmount, freeBet int64, reference string, withholding, tax_deducted_amount, payout float64) string {
+func (s *LuckyNumberService) createJackpotMessage(selectedNumber string, winAmounts map[string]WinAmount, freeBet int64, reference string, withholding float64, tax_deducted_amount, payout float64) string {
 	var boxes []string
 	for num, winAmount := range winAmounts {
 		boxes = append(boxes, fmt.Sprintf("Box %s - %s", num, winAmount.Item))
@@ -2411,7 +2412,7 @@ func (s *LuckyNumberService) createJackpotMessage(selectedNumber string, winAmou
 	return fmt.Sprintf(utils.Texts["results"]["jackpot"],
 		reference,
 		winAmounts[selectedNumber].Item,
-		tax_deducted_amount,
+		FormatToMZN(tax_deducted_amount),
 	)
 }
 
@@ -2556,11 +2557,14 @@ func (s *LuckyNumberService) PlaceBetSpin(
 	adjustRTP := utils.ToFloat64(setting["adjustmentable_rtp"])
 	minMul := utils.ToFloat64(setting["min_win_multipier"])
 	maxMul := utils.ToFloat64(setting["max_win_multipier"])
-	minLoss := utils.ToInt64(setting["min_loss_count"])
+
+	// minLoss := utils.ToInt64(setting["min_loss_count"])
 	vig := utils.ToFloat64(setting["vig_percentage"])
 	overload := utils.ToFloat64(setting["rtp_overload"])
 	withholding := utils.ToFloat64(setting["withholding"])
 	playerTotalLosses := utils.ToFloat64(player["total_losses"])
+
+	jackpotspin := utils.ToFloat64(setting["jackpot_percentage"])
 
 	playerLost := utils.ToInt64(player["lost_count"])
 	playerPayout := utils.ToFloat64(player["payout"])
@@ -2694,78 +2698,178 @@ func (s *LuckyNumberService) PlaceBetSpin(
 	//----------------------------------------------------
 	// RTP CALC
 	//----------------------------------------------------
-	currentRTPDay := 0.0
-	if kpiBet > 0 {
-		currentRTPDay = ((kpiPay + BetAmount) / kpiBet) * 100
-	}
 
 	//----------------------------------------------------
-	// ALLOWED WIN RANGE
-	//----------------------------------------------------
+
+	// Calculate min/max win
 	minWin := BetAmount * minMul
 	maxWin := math.Min(BetAmount*maxMul, gameExposure)
 
-	// 80% basket cap
+	// Apply basket cap (80%)
 	maxWin = math.Min(maxWin, basketValue*0.80)
 
-	//----------------------------------------------------
-	// LOSS CONDITIONS
-	//----------------------------------------------------
-	rtpLimit := defaultRTP + adjustRTP
+	// Generate potential win amount
+	winAmt := cryptoRandFloatRange(minWin, maxWin)
 
-	logrus.Infof("rtpLimit : %s", rtpLimit)
-
-	logrus.Infof("currentRTPDay : %s", currentRTPDay)
-	logrus.Infof("playerRTP : %s", playerRTP)
-	logrus.Infof("rtpLimit+vig+overload : %s", rtpLimit+vig+overload)
-
-	tooHigh := currentRTPDay > rtpLimit || playerRTP > rtpLimit || playerRTP > (rtpLimit+vig+overload)
-
-	if BetAmount > basketValue || tooHigh {
-		return hardLoss()
+	// Calculate current RTP day
+	currentRTPDay := 0.0
+	if kpiBet > 0 {
+		currentRTPDay = ((kpiPay + winAmt) / kpiBet) * 100
 	}
 
-	//----------------------------------------------------
-	// FORCED WIN – if lost enough
-	//----------------------------------------------------
-	if playerLost >= minLoss {
+	// Define RTP limits
+	rtpLimit := defaultRTP + adjustRTP + jackpotspin
+	tooHigh := currentRTPDay > rtpLimit || playerRTP > (rtpLimit+vig+overload)
 
-		if maxWin < minWin { // cannot afford win
+	logrus.Infof("rtpLimit : %s", rtpLimit)
+	logrus.Infof("currentRTPDay : %s", currentRTPDay)
+	logrus.Infof("playerRTP : %s", playerRTP)
+	logrus.Infof("overload_rtp : %s", (rtpLimit + vig + overload))
+
+	// Hard loss conditions
+
+	minLossCount := cryptoRandIndex(int(setting["min_loss_count"].(float64))) + 1
+
+	// 	forceWin := params.PlayerLostCount >= int64(params.MinLossCount+10)
+
+	// if forceWin {
+
+	logrus.Infof("playerLost : %s", playerLost)
+	logrus.Infof("minLossCount : %s", minLossCount)
+	// logrus.Infof("user already : %s", user)
+	// logrus.Infof("user already : %s", user)
+
+	// minWinAmount := BetAmount * minMul
+	// maxWinAmount := math.Min(BetAmount*maxMul, gameExposure)
+
+	// ------------------------------
+	// FORCED WIN IF PLAYER LOST ENOUGH
+	// ------------------------------
+	if int(playerLost) >= (int(minLossCount) + 0) {
+
+		if maxWin < minWin {
+			return hardLoss() // cannot afford a win
+		}
+		//----------------------------------------------------
+		// 100% RANDOM FORCED WIN USING CRYPTO RNG
+		//----------------------------------------------------
+
+		// Absolute maximum system allows based on RTP
+		maxAllowedPayout := (rtpLimit/100.0)*kpiBet - kpiPay
+		if maxAllowedPayout <= 0 {
 			return hardLoss()
 		}
 
-		winAmt := utils.RandomFloat(minWin, maxWin)
-		tax, net := calcTax(winAmt)
-		row := forcedMatch()
+		// Remove negative exposures
+		maxAllowedPayout = math.Max(maxAllowedPayout, 0)
 
+		// Also must respect game exposure and basket limits
+		absoluteMax := math.Min(maxAllowedPayout, maxWin) // maxWin already includes exposure & basket caps
+
+		if absoluteMax <= 0 {
+			return hardLoss()
+		}
+
+		// ------------------------------------------------------------
+		// FULL-RANDOM: forcedAmount anywhere between 0 and absoluteMax
+		// ------------------------------------------------------------
+		forcedAmount := cryptoRandFloatRange(0, absoluteMax)
+
+		// Add chaotic random multiplier ±50%
+		randomMultiplier := (cryptoRandFloat()*1.0 + 0.5) // range = 0.5 → 1.5
+		forcedAmount *= randomMultiplier
+
+		// Clamp back to safe limits
+		forcedAmount = math.Min(math.Max(forcedAmount, 0), absoluteMax)
+
+		// Compute new RTP
+		var currentRTPDay float64
+		if kpiBet > 0 {
+			currentRTPDay = ((kpiPay + forcedAmount) / kpiBet) * 100.0
+		}
+
+		// ------------------------------------------------------------
+		// If RTP still too high → reduce forcedAmount
+		// ------------------------------------------------------------
+		if currentRTPDay > rtpLimit {
+			for i := 0; i < 10; i++ {
+				currentRTPDay = ((kpiPay + forcedAmount) / kpiBet) * 100.0
+
+				if currentRTPDay <= rtpLimit {
+					break
+				}
+
+				// Reduce by 8% each loop
+				forcedAmount *= 0.92
+				forcedAmount = math.Max(0, math.Min(forcedAmount, absoluteMax))
+			}
+		}
+
+		// Final log
+		logrus.Infof("[FORCED-WIN RANDOM] forcedAmount=%.2f  maxAllowed=%.2f RTP=%.2f",
+			forcedAmount, absoluteMax, currentRTPDay)
+
+		// Check basket coverage
+		if forcedAmount > basketValue || forcedAmount < 1 {
+			return hardLoss()
+		}
+
+		// Assign final forced win
+		amount := math.Round(forcedAmount*100) / 100
+
+		logrus.Infof("[FORCE-WIN COMPLETE] Forced win=%.2f, adjustable_rtp=%.2f, target_rtp=%.2f, basket=%.2f",
+			amount, kpiPay, rtpLimit, basketValue)
+
+		if basketValue > amount {
+			tax, net := calcTax(amount)
+
+			// Force a matching row (3 symbols match)
+			row := forcedMatch()
+
+			logrus.Infof("minLossCount : %s", amount)
+
+			logrus.Infof("minLossCount : %s", net)
+			// Record win without adjusting RTP
+			if err := s.winSpin(ctx, playerID, playerPayout, playerTotalBets, utils.ToString(row), tax, net, amount, msisdn, gameID); err != nil {
+				return SpinResponse{}, err
+			}
+
+			_, _ = s.db.UpdateLuckyBetWin(ctx, utils.ToString(row), "SPIN&WIN", gameID, winAmt, "Win")
+
+			return SpinResponse{
+				Row:       row,
+				Win:       true,
+				WinAmount: amount,
+				GameID:    gameID,
+			}, nil
+		} else {
+			return hardLoss()
+		}
+	} else {
+
+		if winAmt > basketValue || tooHigh {
+			return hardLoss()
+		}
+
+		// ------------------------------
+		// NORMAL WIN (if allowed by RTP)
+		// ------------------------------
+		tax, net := calcTax(winAmt)
+		row := forcedMatch() // matching row
 		if err := s.winSpin(ctx, playerID, playerPayout, playerTotalBets, utils.ToString(row), tax, net, winAmt, msisdn, gameID); err != nil {
 			return SpinResponse{}, err
 		}
 
 		_, _ = s.db.UpdateLuckyBetWin(ctx, utils.ToString(row), "SPIN&WIN", gameID, winAmt, "Win")
 
-		return SpinResponse{Row: row, Win: true, WinAmount: winAmt, GameID: gameID}, nil
+		return SpinResponse{
+			Row:       row,
+			Win:       true,
+			WinAmount: winAmt,
+			GameID:    gameID,
+		}, nil
 	}
 
-	//----------------------------------------------------
-	// NORMAL WIN (allowed)
-	//----------------------------------------------------
-	winAmt := utils.RandomFloat(minWin, maxWin)
-	tax, net := calcTax(winAmt)
-	row := forcedMatch() // WIN → matching row
-
-	if err := s.winSpin(ctx, playerID, playerPayout, playerTotalBets, utils.ToString(row), tax, net, winAmt, msisdn, gameID); err != nil {
-		return SpinResponse{}, err
-	}
-
-	_, _ = s.db.UpdateLuckyBetWin(ctx, utils.ToString(row), "SPIN&WIN", gameID, winAmt, "Win")
-
-	return SpinResponse{
-		Row:       row,
-		Win:       true,
-		WinAmount: winAmt,
-		GameID:    gameID,
-	}, nil
 }
 
 // SecureInt returns a cryptographically secure int in [0, max)
