@@ -114,6 +114,13 @@ type PlaceBetResult struct {
 	Message    string                `json:"Message"`
 }
 
+type SpinResponse struct {
+	Row       []string `json:"row"`
+	Win       bool     `json:"win"`
+	WinAmount float64  `json:"win_amount"`
+	GameID    string   `json:"game_id"`
+}
+
 type PlaceBetResultDisplay struct {
 	Boxes         map[string]WinAmount `json:"Boxes"` // JSON string
 	ResultStatus  string               `json:"ResultStatus"`
@@ -499,32 +506,11 @@ func (s *LuckyNumberService) IniatatDeposit(msisdn string, amount float64, chann
 }
 
 // PlaceBet handles the main betting logic
-func (s *LuckyNumberService) PlaceBet(ussd string, name string, gameCatID string, msisdn string, amount float64, selectedNumber string, channel string) (PlaceBetResult, error) {
+func (s *LuckyNumberService) PlaceBet(user map[string]interface{}, ussd string, name string, gameCatID string, msisdn string, amount float64, selectedNumber string, channel string) (PlaceBetResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	ctx := context.Background()
-
-	// 1. Check user
-	user, err := s.db.CheckUser(ctx, msisdn)
-	if err != nil {
-		return PlaceBetResult{}, err
-	}
-	mnoCategory := s.getMNOCategory(msisdn)
-
-	// 2. Create user if not exists
-	if user == nil {
-		_, err := s.db.CreateUser(ctx, mnoCategory, msisdn)
-		if err != nil {
-			logrus.Errorf("Error creating user: %v", err)
-			return PlaceBetResult{}, err
-		}
-		// Refresh user
-		user, err = s.db.CheckUser(ctx, msisdn)
-		if err != nil {
-			return PlaceBetResult{}, err
-		}
-	}
 
 	gameID := s.randomString(10)
 
@@ -558,10 +544,6 @@ func (s *LuckyNumberService) PlaceBet(ussd string, name string, gameCatID string
 		}
 
 		// Refresh user data after updates
-		user, err = s.db.CheckUser(ctx, msisdn)
-		if err != nil {
-			return PlaceBetResult{}, err
-		}
 
 		// Play game immediately
 		game_result, err := s.playGame(ctx, totalBetsHist, gameCatID, user, msisdn, amount, selectedNumber, gameID,
@@ -602,6 +584,7 @@ func (s *LuckyNumberService) PlaceBet(ussd string, name string, gameCatID string
 
 			return PlaceBetResult{GameResult: game_result, FreeBet: "false", Message: "Bet Successful Placed"}, nil
 		} else {
+
 			return PlaceBetResult{}, fmt.Errorf("insufficient balance")
 		}
 	}
@@ -772,6 +755,10 @@ func (s *LuckyNumberService) SettleDeposit(msisdn string, amount float64, name, 
 			}()
 
 			go func() {
+				_, err := s.db.UpdateKPIDeposit(ctx, amount)
+				errs <- err
+			}()
+			go func() {
 				_, err := s.db.DeleteUserAttempted(ctx, msisdn)
 				errs <- err
 			}()
@@ -833,6 +820,10 @@ func (s *LuckyNumberService) SettleDeposit(msisdn string, amount float64, name, 
 				errs <- err
 			}()
 
+			go func() {
+				_, err := s.db.UpdateKPIDeposit(ctx, amount)
+				errs <- err
+			}()
 			go func() {
 				_, err := s.db.CreateDepositRecordLucky(ctx, msisdn, amount, transactionID, shortcode, name, reference, betType)
 				errs <- err
@@ -1138,6 +1129,16 @@ func (s *LuckyNumberService) playGame(ctx context.Context, history interface{}, 
 		updateUserRTPTask = func() error { return nil }
 	}
 
+	// if betType == "free_bet" {
+	// 	updateKPITask = func() error {
+	// 		_, err := s.db.InsertIntoDepositLuckyRequestBonus(ctx, betType, ussd, gameName,
+	// 			s.getMNOCategory(msisdn), gameCatID, betAmount, msisdn, selectedNumber, reference, channel)
+	// 		return err
+	// 	}
+	// } else {
+	// 	depositTask = func() error { return nil }
+	// }
+
 	// Execute all database operations
 	tasks := []func() error{
 		depositTask,
@@ -1171,10 +1172,10 @@ func (s *LuckyNumberService) playGame(ctx context.Context, history interface{}, 
 			_, err := s.db.UpdateHousePawaBoxKeBets(ctx, betAmount)
 			return err
 		},
-		func() error {
-			_, err := s.db.UpdateKPIDeposit(ctx, betAmount)
-			return err
-		},
+		// func() error {
+		// 	_, err := s.db.UpdateKPIDeposit(ctx, betAmount)
+		// 	return err
+		// },
 		func() error {
 			_, err := s.db.InsertHouseLogsPawaBoxKeGameID(ctx, reference, "total_bets", msisdn, betAmount)
 			return err
@@ -1423,7 +1424,7 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 	playerPayout := utils.ToFloat64(player["payout"])
 	playerTotalBets := utils.ToFloat64(player["total_bets"])
 	playerTotalLosses := utils.ToFloat64(player["total_losses"])
-	defaultRTP := utils.ToFloat64(setting["default"])
+	defaultRTP := utils.ToFloat64(setting["default_rtp"])
 	adjustmentableRTP := utils.ToFloat64(setting["adjustmentable_rtp"])
 	minWinMultiplier := utils.ToFloat64(setting["min_win_multipier"])
 	maxWinMultiplier := utils.ToFloat64(setting["max_win_multipier"])
@@ -1503,9 +1504,15 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 	logrus.Infof("Max won: %.2f", maxWon)
 	logrus.Infof("Default RTP: %.2f", defaultRTP)
 	logrus.Infof("Player RTP: %.2f", utils.ToFloat64(player["rtp"]))
-
 	// Calculate current RTP for the day - add division by zero check
 	var currentRTPDay float64
+
+	logrus.Infof("kpiBet payout: %.2f", kpiBet)
+
+	logrus.Infof("KPI payout: %.2f", kpiPayout)
+
+	logrus.Infof("sum currentRTPDay: %.2f", winAmountValue+kpiPayout)
+
 	if kpiBet > 0 {
 		currentRTPDay = ((kpiPayout + winAmountValue) / kpiBet) * 100
 	} else {
@@ -1513,25 +1520,36 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		logrus.Warn("kpiBet is zero, cannot calculate RTP")
 	}
 
+	basket, err := s.db.CheckBasketLucky(ctx)
+
+	if err != nil {
+		return PlaceBetResultDisplay{}, fmt.Errorf("failed to fetch baskets: %w", err)
+	}
+
+	basketValue := utils.ToFloat64(basket["amount"])
+
 	logrus.Infof("Default RTP: %.2f", defaultRTP)
 	logrus.Infof("Player RTP: %.2f", utils.ToFloat64(player["rtp"]))
 	logrus.Infof("Global RTP: %.2f", utils.ToFloat64(player["rtp"])) // Assuming rtp_player is same
 	logrus.Infof("Current RTP: %.2f", kpiRTP)
 	logrus.Infof("Current RTP Day: %.2f", currentRTPDay)
 	logrus.Infof("Player lost count: %d", playerLostCount)
-	logrus.Infof("Basket value: %.2f", utils.ToFloat64(kpi["basket_value"]))
+	logrus.Infof("Basket value: %.2f", basketValue)
 	logrus.Infof("Win amount: %.2f", winAmountValue)
 
-	basketValue := utils.ToFloat64(kpi["basket_value"])
+	var crtp = math.Round(currentRTPDay*100) / 100
 
+	logrus.Infof("Win amount RTP: %.2f", crtp)
+
+	logrus.Infof("Win amount RTP: %.2f", (defaultRTP + adjustmentableRTP))
 	// Win condition
-	if winAmountValue > 0 && (defaultRTP+adjustmentableRTP) >= math.Round(currentRTPDay*100)/100 && basketValue > winAmountValue {
+	if winAmountValue > 0 && (defaultRTP+adjustmentableRTP) >= crtp && basketValue > winAmountValue {
 		// Player wins
 		resultMessage := fmt.Sprintf("Box %s wins. Numbers: %+v", selectedNumber, winAmounts)
 		logrus.Info(resultMessage)
 
 		// Update bet as win
-		_, err := s.db.UpdateLuckyBetWin(ctx, resultMessage, reference, winAmountValue, "Win")
+		_, err := s.db.UpdateLuckyBetWin(ctx, resultMessage, "PAWABOX", reference, winAmountValue, "Win")
 		if err != nil {
 			return PlaceBetResultDisplay{}, fmt.Errorf("failed to update lucky bet win: %w", err)
 		}
@@ -1628,7 +1646,7 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		}
 
 		// Update bet as loss
-		_, err = s.db.UpdateLuckyBet(ctx, resultMessage, reference, "Lose")
+		_, err = s.db.UpdateLuckyBet(ctx, resultMessage, "PAWABOX", reference, "Lose")
 		if err != nil {
 			return PlaceBetResultDisplay{}, fmt.Errorf("failed to update lucky bet: %w", err)
 		}
@@ -2177,4 +2195,770 @@ func (s *LuckyNumberService) InsertFailedSMS(ref string) error {
 // Utility function
 func round(value float64) float64 {
 	return float64(int(value + 0.5))
+}
+
+func (s *LuckyNumberService) PlaceBetSpin(
+	player map[string]interface{},
+	gameCatID, msisdn string,
+	amount float64,
+	channel, mode string,
+) (SpinResponse, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ctx := context.Background()
+	gameID := "SPIN_" + s.randomString(10)
+	symbols := []string{"A", "B", "C", "D", "E"}
+
+	//----------------------------------------------------
+	// LOAD SETTINGS
+	//----------------------------------------------------
+	data, err := s.loadSpinData(ctx, gameCatID, msisdn)
+	if err != nil {
+		return SpinResponse{}, err
+	}
+
+	basket := data.Basket
+	setting := data.Setting
+	kpi := data.KPI
+	game := data.Game
+	// player := data.Player
+
+	//----------------------------------------------------
+	// EXTRACT PARAMS
+	//----------------------------------------------------
+
+	basketValue := utils.ToFloat64(basket["amount"])
+
+	defaultRTP := utils.ToFloat64(setting["default_rtp"])
+	adjustRTP := utils.ToFloat64(setting["adjustmentable_rtp"])
+	minMul := utils.ToFloat64(setting["min_win_multipier"])
+	maxMul := utils.ToFloat64(setting["max_win_multipier"])
+	minLoss := utils.ToInt64(setting["min_loss_count"])
+	vig := utils.ToFloat64(setting["vig_percentage"])
+	overload := utils.ToFloat64(setting["rtp_overload"])
+	withholding := utils.ToFloat64(setting["withholding"])
+	playerTotalLosses := utils.ToFloat64(player["total_losses"])
+
+	playerLost := utils.ToInt64(player["lost_count"])
+	playerPayout := utils.ToFloat64(player["payout"])
+	playerBet := utils.ToFloat64(player["total_bets"])
+	playerTotalBets := player["total_bets"].(float64)
+	playerID := utils.ToInt64(player["id"])
+
+	playerLostCount := int64(0)
+	if lost, ok := player["lost_count"].(int32); ok {
+		playerLostCount = int64(lost)
+	} else if lost, ok := player["lost_count"].(int64); ok {
+		playerLostCount = lost
+	}
+
+	playerRTP := 0.0
+	if playerBet > 0 {
+		playerRTP = (playerPayout / playerBet) * 100
+	}
+
+	gameExposure := utils.ToFloat64(game["max_exposure"])
+
+	kpiBet := utils.ToFloat64(kpi["bet"])
+	kpiPay := utils.ToFloat64(kpi["payout"])
+
+	BetAmount := amount
+	houseValue := (vig / 100) * BetAmount
+
+	globalRTP := setting["default_rtp"].(float64) + setting["adjustmentable_rtp"].(float64)
+	basket_Value := BetAmount * (globalRTP / 100)
+
+	//----------------------------------------------------
+	// HELPER: FORCE LOSS
+	//----------------------------------------------------
+	hardLoss := func() (SpinResponse, error) {
+		row := randomNonMatchingRow(symbols)
+		_, _ = s.db.UpdateLuckyBet(ctx, utils.ToString(row), "SPIN&WIN", gameID, "Lose")
+
+		err := s.lose(ctx, playerID, gameID, msisdn, playerLostCount, playerTotalLosses, BetAmount)
+		if err != nil {
+			return SpinResponse{}, fmt.Errorf("failed to handle loss: %w", err)
+		}
+
+		return SpinResponse{
+			Row:       row,
+			Win:       false,
+			WinAmount: 0,
+			GameID:    gameID,
+		}, nil
+	}
+
+	//----------------------------------------------------
+	// TAX CALC
+	//----------------------------------------------------
+	calcTax := func(amount float64) (tax, net float64) {
+		tax = (withholding / 100) * amount
+		return tax, amount - tax
+	}
+
+	//----------------------------------------------------
+	// RNG HELPERS
+	//----------------------------------------------------
+	forcedMatch := func() []string {
+		return forcedMatchingRow(symbols)
+	}
+
+	//----------------------------------------------------
+	// UPDATE PLAYER BET + TAX FIRST
+	//----------------------------------------------------
+
+	exciseTax := round(setting["excise_duty"].(float64) / 100 * BetAmount)
+
+	if err := s.bet(ctx, gameID, playerID, playerTotalBets, BetAmount); err != nil {
+		return SpinResponse{}, err
+	}
+
+	// batch async DB tasks
+	tasks := []func() error{
+		func() error { _, e := s.db.UpdateKPIHandle(ctx, BetAmount); return e },
+		func() error { _, e := s.db.UpdateKPIPayoutSPIN(ctx, exciseTax); return e },
+		func() error {
+			_, e := s.db.InsertTaxQueue(ctx, gameID, BetAmount, exciseTax, BetAmount-exciseTax, "excise", msisdn)
+			return e
+		},
+		func() error { _, e := s.db.InsertB2BWithdrawalB2B(ctx, gameID, msisdn, exciseTax, "Placed"); return e },
+		func() error { _, e := s.db.UpdateUserRTP(ctx, BetAmount, playerID); return e },
+		func() error {
+			_, e := s.db.CreateBet(ctx, msisdn, "0", BetAmount, "", gameID, "Pending", "SpinWin", gameCatID, utils.ToString(game["name"]), channel)
+			return e
+		},
+		func() error { _, e := s.db.UpdateHousePawaBoxKeBets(ctx, BetAmount); return e },
+		func() error {
+			_, e := s.db.InsertHouseLogsPawaBoxKeGameID(ctx, gameID, "total_bets", msisdn, BetAmount)
+			return e
+		},
+		func() error { _, e := s.db.UpdateHouseLucyNumberHouseCurrentRTP(ctx); return e },
+		func() error { _, e := s.db.UpdateHousePawaBoxKeHouse(ctx, houseValue); return e },
+		func() error { _, e := s.db.UpdateKPIVIG(ctx, houseValue); return e },
+		func() error {
+			_, e := s.db.InsertHouseLogsPawaBoxKeGameID(ctx, gameID, "house_income", msisdn, houseValue)
+			return e
+		},
+		func() error { _, e := s.db.UpdateHousePawaBoxKeBasket(ctx, basket_Value); return e },
+
+		func() error {
+			_, err := s.db.InsertHouseBasketLogs(ctx, 0, basket_Value, basket_Value, fmt.Sprintf("%.2f added to the basket:- game id %s", basket_Value, gameID))
+			return err
+		},
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(tasks))
+
+	for _, task := range tasks {
+		wg.Add(1)
+		go func(t func() error) {
+			defer wg.Done()
+			if err := t(); err != nil {
+				errs <- err
+			}
+		}(task)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			return SpinResponse{}, err
+		}
+	}
+
+	//----------------------------------------------------
+	// RTP CALC
+	//----------------------------------------------------
+	currentRTPDay := 0.0
+	if kpiBet > 0 {
+		currentRTPDay = ((kpiPay + BetAmount) / kpiBet) * 100
+	}
+
+	//----------------------------------------------------
+	// ALLOWED WIN RANGE
+	//----------------------------------------------------
+	minWin := BetAmount * minMul
+	maxWin := math.Min(BetAmount*maxMul, gameExposure)
+
+	// 80% basket cap
+	maxWin = math.Min(maxWin, basketValue*0.80)
+
+	//----------------------------------------------------
+	// LOSS CONDITIONS
+	//----------------------------------------------------
+	rtpLimit := defaultRTP + adjustRTP
+
+	logrus.Infof("rtpLimit : %s", rtpLimit)
+
+	logrus.Infof("currentRTPDay : %s", currentRTPDay)
+	logrus.Infof("playerRTP : %s", playerRTP)
+	logrus.Infof("rtpLimit+vig+overload : %s", rtpLimit+vig+overload)
+
+	tooHigh := currentRTPDay > rtpLimit || playerRTP > rtpLimit || playerRTP > (rtpLimit+vig+overload)
+
+	if BetAmount > basketValue || tooHigh {
+		return hardLoss()
+	}
+
+	//----------------------------------------------------
+	// FORCED WIN – if lost enough
+	//----------------------------------------------------
+	if playerLost >= minLoss {
+
+		if maxWin < minWin { // cannot afford win
+			return hardLoss()
+		}
+
+		winAmt := utils.RandomFloat(minWin, maxWin)
+		tax, net := calcTax(winAmt)
+		row := forcedMatch()
+
+		if err := s.winSpin(ctx, playerID, playerPayout, playerTotalBets, utils.ToString(row), tax, net, winAmt, msisdn, gameID); err != nil {
+			return SpinResponse{}, err
+		}
+
+		_, _ = s.db.UpdateLuckyBetWin(ctx, utils.ToString(row), "SPIN&WIN", gameID, winAmt, "Win")
+
+		return SpinResponse{Row: row, Win: true, WinAmount: winAmt, GameID: gameID}, nil
+	}
+
+	//----------------------------------------------------
+	// NORMAL WIN (allowed)
+	//----------------------------------------------------
+	winAmt := utils.RandomFloat(minWin, maxWin)
+	tax, net := calcTax(winAmt)
+	row := forcedMatch() // WIN → matching row
+
+	if err := s.winSpin(ctx, playerID, playerPayout, playerTotalBets, utils.ToString(row), tax, net, winAmt, msisdn, gameID); err != nil {
+		return SpinResponse{}, err
+	}
+
+	_, _ = s.db.UpdateLuckyBetWin(ctx, utils.ToString(row), "SPIN&WIN", gameID, winAmt, "Win")
+
+	return SpinResponse{
+		Row:       row,
+		Win:       true,
+		WinAmount: winAmt,
+		GameID:    gameID,
+	}, nil
+}
+
+// SecureInt returns a cryptographically secure int in [0, max)
+// func SecureInt(max int64) (int64, error) {
+// 	n, err := rand.Int(rand.Reader, big.NewInt(max))
+// 	if err != nil {
+// 		return 0, err
+// 	}
+// 	return n.Int64(), nil
+// }
+
+// func (s *LuckyNumberService) PlaceBetSpin(
+// 	gameCatID string,
+// 	msisdn string,
+// 	amount float64,
+// 	channel string,
+// 	mode string,
+// ) (SpinResponse, error) {
+
+// 	s.mu.Lock()
+// 	defer s.mu.Unlock()
+
+// 	ctx := context.Background()
+
+// 	gameID := s.randomString(10)
+// 	symbols := []string{"A", "B", "C", "D", "E"}
+
+// 	// -------------------------------------------------
+// 	// 1. Load Basket / Settings / Player / KPI / Game
+// 	// -------------------------------------------------
+// 	basket, err := s.db.CheckBasketLucky(ctx)
+// 	if err != nil {
+// 		return SpinResponse{}, err
+// 	}
+// 	basketValue := utils.ToFloat64(basket["amount"])
+
+// 	setting, err := s.db.CheckSetting(ctx)
+// 	if err != nil {
+// 		return SpinResponse{}, err
+// 	}
+
+// 	kpi, err := s.db.CheckSettingKPI(ctx)
+// 	if err != nil {
+// 		return SpinResponse{}, err
+// 	}
+
+// 	game, err := s.db.CheckGamePlay(ctx, gameCatID)
+// 	if err != nil {
+// 		return SpinResponse{}, err
+// 	}
+
+// 	player, err := s.db.CheckUser(ctx, msisdn)
+// 	if err != nil {
+// 		return SpinResponse{}, err
+// 	}
+
+// 	gameName := utils.ToString(game["name"])
+
+// 	// -------------------------------------------------
+// 	// 2. Extract Setting Params
+// 	// -------------------------------------------------
+
+// 	BetAmount := amount
+
+// 	defaultRTP := utils.ToFloat64(setting["default_rtp"])
+// 	adjustRTP := utils.ToFloat64(setting["adjustmentable_rtp"])
+// 	minWinMul := utils.ToFloat64(setting["min_win_multipier"])
+// 	maxWinMul := utils.ToFloat64(setting["max_win_multipier"])
+// 	minLossCount := utils.ToInt64(setting["min_loss_count"])
+// 	vig := utils.ToFloat64(setting["vig_percentage"])
+// 	overload := utils.ToFloat64(setting["rtp_overload"])
+// 	withholding := utils.ToFloat64(setting["withholding"])
+
+// 	playerLost := utils.ToInt64(player["lost_count"])
+// 	playerPayout := utils.ToFloat64(player["payout"])
+// 	playerBet := utils.ToFloat64(player["total_bets"])
+// 	houseValue := (vig / 100) * BetAmount
+
+// 	playerID := utils.ToInt64(player["id"])
+
+// 	playerTotalBets := player["total_bets"].(float64)
+
+// 	playerRTP := 0.0
+// 	if playerBet > 0 {
+// 		playerRTP = (playerPayout / playerBet) * 100
+// 	}
+
+// 	gameExposure := utils.ToFloat64(game["max_exposure"])
+
+// 	kpiBet := utils.ToFloat64(kpi["bet"])
+// 	kpiPay := utils.ToFloat64(kpi["payout"])
+
+// 	// Calculate taxes
+// 	// withholdTaxJackpot := (setting["withholding"].(float64) / 100) * jackpotValue
+// 	exciseTaxAmount := (setting["excise_duty"].(float64) / 100) * BetAmount
+// 	exciseTaxAmountRound := round(exciseTaxAmount)
+
+// 	err = s.bet(ctx, gameCatID, player["id"].(int64), playerTotalBets, BetAmount)
+// 	if err != nil {
+// 		return SpinResponse{}, err
+// 	}
+
+// 	// Execute all database operations
+// 	tasks := []func() error{
+// 		// func() error { return depositTask },
+// 		func() error {
+// 			_, err := s.db.UpdateKPIHandle(ctx, BetAmount)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.UpdateKPIPayoutSPIN(ctx, exciseTaxAmountRound)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.InsertTaxQueue(ctx, gameID, BetAmount, exciseTaxAmountRound, BetAmount-exciseTaxAmountRound, "excise", msisdn)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.InsertB2BWithdrawalB2B(ctx, gameID, msisdn, exciseTaxAmountRound, "Placed")
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.UpdateUserRTP(ctx, BetAmount, player["id"].(int64))
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.CreateBet(ctx, msisdn, "0", BetAmount, "", gameID, "Pending", "SpinWin", gameCatID, gameName, channel)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.UpdateHousePawaBoxKeBets(ctx, BetAmount)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.UpdateKPIDeposit(ctx, BetAmount)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.InsertHouseLogsPawaBoxKeGameID(ctx, gameID, "total_bets", msisdn, BetAmount)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.UpdateHouseLucyNumberHouseCurrentRTP(ctx)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.UpdateHousePawaBoxKeHouse(ctx, houseValue)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.UpdateKPIVIG(ctx, houseValue)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.InsertHouseLogsPawaBoxKeGameID(ctx, gameID, "house_income", msisdn, houseValue)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.UpdateHousePawaBoxKeBasket(ctx, basketValue)
+// 			return err
+// 		},
+// 		func() error {
+// 			_, err := s.db.InsertHouseBasketLogs(ctx, 0, basketValue, basketValue, fmt.Sprintf("%.2f added to the basket:- game id %s", basketValue, gameID))
+// 			return err
+// 		},
+// 	}
+// 	// Run all tasks in parallel
+// 	var wg sync.WaitGroup
+
+// 	errs := make(chan error, len(tasks))
+// 	wg.Add(len(tasks))
+// 	for _, task := range tasks {
+// 		t := task // capture loop variable
+// 		go func() {
+// 			defer wg.Done()
+// 			if err := t(); err != nil {
+// 				errs <- err
+// 			}
+// 		}()
+// 	}
+
+// 	// Wait for all tasks to finish
+// 	wg.Wait()
+// 	close(errs)
+
+// 	// Check for errors
+// 	for err := range errs {
+// 		if err != nil {
+// 			return SpinResponse{}, err
+// 		}
+// 	}
+
+// 	currentRTPDay := 0.0
+// 	if kpiBet > 0 {
+// 		currentRTPDay = ((kpiPay + BetAmount) / kpiBet) * 100
+// 	}
+
+// 	// -------------------------------------------------
+// 	// 3. Compute Allowed Win Range
+// 	// -------------------------------------------------
+// 	minWinAmount := BetAmount * minWinMul
+// 	maxWinAmount := math.Min(BetAmount*maxWinMul, gameExposure)
+
+// 	// Basket limit (80%)
+// 	basketCap := basketValue * 0.80
+// 	if basketCap > minWinAmount {
+// 		maxWinAmount = math.Min(maxWinAmount, basketCap)
+// 	}
+
+// 	// -------------------------------------------------
+// 	// 4. Easy Hard-Loss Conditions
+// 	// -------------------------------------------------
+// 	hardLoss := func() SpinResponse {
+
+// 		v := randomNonMatchingRow(symbols)
+
+// 		_, err = s.db.UpdateLuckyBet(ctx, utils.ToString(v), gameCatID, "Lose")
+
+// 		return SpinResponse{
+// 			Row:       v,
+// 			Win:       false,
+// 			WinAmount: 0,
+// 			GameID:    gameID,
+// 		}
+// 	}
+
+// 	if BetAmount > basketValue {
+// 		return hardLoss(), nil
+// 	}
+
+// 	// RTP too high → force loss
+// 	if (currentRTPDay > (defaultRTP+adjustRTP) && playerLost >= minLossCount) ||
+// 		(playerRTP > (defaultRTP+adjustRTP) && playerLost >= minLossCount) ||
+// 		(currentRTPDay > defaultRTP && playerLost < minLossCount) ||
+// 		(playerRTP > defaultRTP && playerLost < minLossCount) ||
+// 		(playerRTP > (defaultRTP + adjustRTP + vig + overload)) {
+
+// 		return hardLoss(), nil
+// 	}
+
+// 	// -------------------------------------------------
+// 	// 5. FORCED WIN (Player lost enough)
+// 	// -------------------------------------------------
+// 	if playerLost >= minLossCount {
+
+// 		// If win cannot be supported → force loss
+// 		if maxWinAmount < minWinAmount {
+// 			return hardLoss(), nil
+// 		}
+
+// 		v := forcedMatchingRow(symbols)
+
+// 		_, err = s.db.UpdateLuckyBet(ctx, utils.ToString(v), gameCatID, "Lose")
+
+// 		forcedWinAmount := utils.RandomFloat(minWinAmount, maxWinAmount)
+
+// 		// Calculate tax
+// 		withholdTax := (withholding / 100) * forcedWinAmount
+// 		taxDeductedAmount := forcedWinAmount - withholdTax
+// 		resutl := forcedMatchingRow(symbols)
+
+// 		// Handle win logic
+// 		err = s.winSpin(ctx, playerID, playerPayout, playerTotalBets, utils.ToString(resutl), withholdTax, taxDeductedAmount, forcedWinAmount, msisdn, gameID)
+// 		if err != nil {
+// 			return SpinResponse{}, fmt.Errorf("failed to handle win: %w", err)
+// 		}
+
+// 		_, err := s.db.UpdateLuckyBetWin(ctx, utils.ToString(resutl), gameID, forcedWinAmount, "Win")
+// 		if err != nil {
+// 			return SpinResponse{}, fmt.Errorf("failed to update lucky bet win: %w", err)
+// 		}
+
+// 		return SpinResponse{
+// 			Row:       resutl,
+// 			Win:       true,
+// 			WinAmount: forcedWinAmount,
+// 			GameID:    gameID,
+// 		}, nil
+// 	}
+
+// 	// -------------------------------------------------
+// 	// 6. Normal Win (allowed by RTP)
+// 	// -------------------------------------------------
+// 	winAmount := utils.RandomFloat(minWinAmount, maxWinAmount)
+
+// 	// Calculate tax
+// 	withholdTax := (withholding / 100) * winAmount
+// 	taxDeductedAmount := winAmount - withholdTax
+// 	resutl := forcedMatchingRow(symbols)
+
+// 	// Handle win logic
+// 	err = s.winSpin(ctx, playerID, playerPayout, playerTotalBets, utils.ToString(resutl), withholdTax, taxDeductedAmount, winAmount, msisdn, gameID)
+// 	if err != nil {
+// 		return SpinResponse{}, fmt.Errorf("failed to handle win: %w", err)
+// 	}
+
+// 	_, err = s.db.UpdateLuckyBetWin(ctx, utils.ToString(resutl), gameID, winAmount, "Win")
+// 	if err != nil {
+// 		return SpinResponse{}, fmt.Errorf("failed to update lucky bet win: %w", err)
+// 	}
+// 	// // Update bet as win
+// 	return SpinResponse{
+// 		Row:       forcedMatchingRow(symbols), // win → matching
+// 		Win:       true,
+// 		WinAmount: winAmount,
+// 		GameID:    gameID,
+// 	}, nil
+// }
+
+func forcedMatchingRow(symbols []string) []string {
+	s := symbols[rand.Intn(len(symbols))]
+	return []string{s, s, s}
+}
+
+func randomNonMatchingRow(symbols []string) []string {
+	row := make([]string, 3)
+	for {
+		for i := 0; i < 3; i++ {
+			row[i] = symbols[rand.Intn(len(symbols))]
+		}
+		if !(row[0] == row[1] && row[1] == row[2]) {
+			return row
+		}
+	}
+}
+
+// // SecureFloat returns random float64 in [min, max]
+// func SecureFloat(min, max float64) (float64, error) {
+// 	// random 63-bit integer
+// 	nBig, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+// 	if err != nil {
+// 		return 0, err
+// 	}
+
+// 	r := float64(nBig.Int64()) / float64(1<<62) // normalize to [0,1]
+// 	return min + r*(max-min), nil
+// }
+
+// row[i] = symbols[rand.Intn(len(symbols))]
+
+// idx, _ := SecureInt(int64(len(symbols)))
+// row[i] = symbols[idx]
+
+// func forceLoss(resp *SpinResponse) (*SpinResponse, error) {
+// 	resp.Win = false
+// 	resp.WinAmount = 0
+// 	return resp, nil
+// }
+
+// win records a win for a player
+func (s *LuckyNumberService) winSpin(ctx context.Context, playerID int64, payout, bets float64, winItem string, withholdTax, taxDeductedAmount, amount float64, msisdn, reference string) error {
+	amountNew := round(amount)
+	withholdTaxNew := round(withholdTax)
+	taxDeductedAmountNew := round(taxDeductedAmount)
+
+	// Insert into withdrawals
+	_, err := s.db.InsertIntoWithdrawalsLucky(ctx, amount, taxDeductedAmountNew, withholdTaxNew, winItem, msisdn, reference)
+	if err != nil {
+		return err
+	}
+
+	// Check settings
+	setting, err := s.db.CheckSetting(ctx)
+	if err != nil {
+		return err
+	}
+
+	if setting != nil {
+		checkWithdrawal, err := s.db.CheckWithdrawalsPawaBoxKe(ctx, reference)
+		if err != nil {
+			return err
+		}
+
+		if checkWithdrawal != nil && checkWithdrawal["msisdn"] != nil {
+			// Insert tax queue
+			_, err := s.db.InsertTaxQueue(ctx, reference, amount, withholdTax, taxDeductedAmount, "withholding", msisdn)
+			if err != nil {
+				return err
+			}
+
+			// Insert B2B withdrawal
+			_, err = s.db.InsertB2BWithdrawalB2B(ctx, reference, msisdn, taxDeductedAmountNew, "Won")
+			if err != nil {
+				return err
+			}
+
+			// Handle different withdrawal amounts
+			var withdrawalTask error
+			if amountNew >= 60000 {
+				_, withdrawalTask = s.db.InsertIntoPendingWithdrawalsLucky(ctx, taxDeductedAmountNew, withholdTaxNew, winItem, msisdn, reference)
+			} else {
+				_, withdrawalTask = s.db.InsertWithdrawalQueue(ctx, reference, msisdn, taxDeductedAmountNew, "http?")
+			}
+
+			if withdrawalTask != nil {
+				return withdrawalTask
+			}
+
+			// Update various records
+			tasks := []func() error{
+				func() error {
+					_, err := s.db.UpdateRESTLossUser(ctx, amountNew, playerID)
+					return err
+				},
+				func() error {
+					_, err := s.db.InsertCustomerLogsPawaBoxKe(ctx, amountNew, "withdraw", utils.ToString(playerID), "customer withdrawal: spin&win", reference)
+					return err
+				},
+				func() error {
+					_, err := s.db.UpdateHouseLuckyWins(ctx, amountNew)
+					return err
+				},
+				func() error {
+					_, err := s.db.UpdateHouseLuckyBasketWins(ctx, amountNew)
+					return err
+				},
+				func() error {
+					_, err := s.db.InsertHouseBasketLogs(ctx, amountNew, 0, -amountNew, fmt.Sprintf("%.2f deducted from the basket:- game id %s", amountNew, reference))
+					return err
+				},
+				func() error {
+					_, err := s.db.InsertHouseLogsPawaBoxKeGameID(ctx, reference, "total_wins", msisdn, amountNew)
+					return err
+				},
+				func() error {
+					_, err := s.db.UpdatePawaBoxKeWithdrawalRequest(ctx, reference)
+					return err
+				},
+			}
+
+			for _, task := range tasks {
+				if err := task(); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+type SpinPrerequisites struct {
+	Basket  map[string]interface{}
+	Setting map[string]interface{}
+	KPI     map[string]interface{}
+	Game    map[string]interface{}
+	Player  map[string]interface{}
+}
+
+func (s *LuckyNumberService) loadSpinData(ctx context.Context, gameCatID, msisdn string) (*SpinPrerequisites, error) {
+
+	var (
+		r     SpinPrerequisites
+		wg    sync.WaitGroup
+		errCh = make(chan error, 5)
+	)
+
+	wg.Add(5)
+
+	go func() {
+		defer wg.Done()
+		v, err := s.db.CheckBasketLucky(ctx)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		r.Basket = v
+	}()
+
+	go func() {
+		defer wg.Done()
+		v, err := s.db.CheckSetting(ctx)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		r.Setting = v
+	}()
+
+	go func() {
+		defer wg.Done()
+		v, err := s.db.CheckSettingKPI(ctx)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		r.KPI = v
+	}()
+
+	go func() {
+		defer wg.Done()
+		v, err := s.db.CheckGamePlay(ctx, gameCatID)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		r.Game = v
+	}()
+
+	// go func() {
+	// 	defer wg.Done()
+	// 	v, err := s.db.CheckUser(ctx, msisdn)
+	// 	if err != nil {
+	// 		errCh <- err
+	// 		return
+	// 	}
+	// 	r.Player = v
+	// }()
+
+	wg.Wait()
+	close(errCh)
+
+	for e := range errCh {
+		return nil, e
+	}
+
+	return &r, nil
 }

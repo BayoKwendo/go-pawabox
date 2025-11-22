@@ -18,6 +18,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
@@ -59,6 +60,14 @@ type PlaceBetRequest struct {
 	Ussd      string      `json:"ussd"`
 }
 
+// request bodies
+type PlaceSpinRequest struct {
+	Amount    float64     `json:"amount"`
+	GameCatID interface{} `json:"game_cat_id"`
+	Msisdn    interface{} `json:"msisdn"`
+	Channel   string      `json:"channel"`
+	Mode      string      `json:"mode"`
+}
 type IniatateDepositRequest struct {
 	Amount  float64     `json:"amount"`
 	Msisdn  interface{} `json:"msisdn"`
@@ -90,8 +99,9 @@ func PlaceBetLuckyNumber(c *fiber.Ctx) error {
 		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
 	}
 
-	var startErr, checkErr error
+	var startErr, checkErr, userErr error
 	var setting map[string]interface{}
+	var user map[string]interface{}
 
 	// Run start and checkGameONE concurrently
 	g := new(errgroup.Group)
@@ -102,6 +112,10 @@ func PlaceBetLuckyNumber(c *fiber.Ctx) error {
 	g.Go(func() error {
 		setting, checkErr = lucky.CheckGameONE(utils.ToString(req.GameCatID))
 		return checkErr
+	})
+	g.Go(func() error {
+		user, userErr = lucky.CheckUser(msisdn)
+		return userErr
 	})
 
 	if err := g.Wait(); err != nil {
@@ -125,29 +139,45 @@ func PlaceBetLuckyNumber(c *fiber.Ctx) error {
 		return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Invalid lucky number. Please select a number between 1 and 7."))
 	}
 
-	// place bet
-	result, err := lucky.PlaceBet(
-		req.Ussd,
-		utils.ToString(setting["name"]),
-		utils.ToString(req.GameCatID),
-		utils.ToString(msisdn),
-		req.Amount,
-		utils.ToString(req.Choice),
-		req.Channel,
-	)
-	if err != nil {
-		log.Printf("Error placing bet: %v", err)
-		return c.Status(500).JSON(models.NewErrorResponse(500, 1, err.Error()))
-	}
+	num := user["balance"].(pgtype.Numeric)
 
-	// success
-	return c.Status(200).JSON(models.H{
-		"Status":        200,
-		"StatusCode":    0,
-		"FreeBet":       result.FreeBet,
-		"StatusMessage": result.Message,
-		"GameResults":   result.GameResult,
-	})
+	f, _ := num.Float64Value()
+	balance := f.Float64
+	amount := utils.ToFloat64(req.Amount)
+
+	if balance >= amount {
+
+		// place bet
+		result, err := lucky.PlaceBet(
+			user,
+			req.Ussd,
+			utils.ToString(setting["name"]),
+			utils.ToString(req.GameCatID),
+			utils.ToString(msisdn),
+			req.Amount,
+			utils.ToString(req.Choice),
+			req.Channel,
+		)
+		if err != nil {
+			log.Printf("Error placing bet: %v", err)
+			return c.Status(500).JSON(models.NewErrorResponse(500, 1, err.Error()))
+		}
+
+		// success
+		return c.Status(200).JSON(models.H{
+			"Status":        200,
+			"StatusCode":    0,
+			"FreeBet":       result.FreeBet,
+			"StatusMessage": result.Message,
+			"GameResults":   result.GameResult,
+		})
+	} else {
+		return c.Status(202).JSON(models.H{
+			"Status":        202,
+			"StatusCode":    3,
+			"StatusMessage": "insufficient balance",
+		})
+	}
 }
 
 func IniatateDepositLuckyNumber(c *fiber.Ctx) error {
@@ -786,4 +816,80 @@ func handleQueryError(err error) *fiber.Error {
 
 	// Full failure
 	return fiber.NewError(500, fmt.Sprintf("service unavailable: %v", err))
+}
+
+func PlaceBetSpin(c *fiber.Ctx) error {
+	var req PlaceSpinRequest
+
+	userClaims := c.Locals("user").(jwt.MapClaims)
+	msisdn := userClaims["sub"].(string) // get MSISDN
+
+	if err := c.BodyParser(&req); err != nil {
+		log.Printf("invalid json: %v", err)
+		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
+	}
+	var startErr, checkErr, userErr error
+	var setting map[string]interface{}
+	var user map[string]interface{}
+
+	// Run start and checkGameONE concurrently
+	g := new(errgroup.Group)
+	g.Go(func() error {
+		startErr = lucky.Start()
+		return startErr
+	})
+	g.Go(func() error {
+		setting, checkErr = lucky.CheckGameONE(utils.ToString(req.GameCatID))
+		return checkErr
+	})
+	g.Go(func() error {
+		user, userErr = lucky.CheckUser(msisdn)
+		return userErr
+	})
+
+	if err := g.Wait(); err != nil {
+		log.Printf("error initializing or checking game: %v", err)
+		return c.Status(500).JSON(models.NewErrorResponse(500, 1, err.Error()))
+	}
+
+	if setting == nil {
+		return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Game not found"))
+	}
+
+	num := user["balance"].(pgtype.Numeric)
+
+	f, _ := num.Float64Value()
+	balance := f.Float64
+	amount := utils.ToFloat64(req.Amount)
+
+	if balance >= amount {
+
+		// place bet
+		result, err := lucky.PlaceBetSpin(
+			user,
+			utils.ToString(req.GameCatID),
+			utils.ToString(msisdn),
+			req.Amount,
+			req.Channel,
+			req.Mode,
+		)
+
+		if err != nil {
+			log.Printf("Error placing bet: %v", err)
+			return c.Status(500).JSON(models.NewErrorResponse(500, 1, err.Error()))
+		}
+
+		// success
+		return c.Status(200).JSON(models.H{
+			"Status":        200,
+			"StatusCode":    0,
+			"StatusMessage": result,
+		})
+	} else {
+		return c.Status(202).JSON(models.H{
+			"Status":        202,
+			"StatusCode":    3,
+			"StatusMessage": "insufficient balance",
+		})
+	}
 }

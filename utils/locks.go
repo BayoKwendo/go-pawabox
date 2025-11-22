@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"sync"
@@ -399,3 +400,9 @@ func VerifyJWTToken(tokenString string) (jwt.MapClaims, error) {
 }
 
 // Helper function to extract token from various sources
+func RandomFloat(min, max float64) float64 {
+	if max <= min {
+		return min
+	}
+	return min + rand.Float64()*(max-min)
+}

@@ -16,6 +16,8 @@ func RegisterRoutes(app *fiber.App) {
 	api.Post("/settle_bt_luckynumber", controllers.SettleBTLuckyNumber)
 	api.Post("/settle_bet_luckynumber", controllers.SettleBetLuckyNumber)
 
+	api.Post("/place_bet_spin", utils.JWTMiddleware(), controllers.PlaceBetSpin)
+
 	api.Post("/initiate_deposit", utils.JWTMiddleware(), controllers.IniatateDepositLuckyNumber)
 
 	api.Post("/settle_withdrawal", controllers.SettleWithdrawalLuckyNumber)

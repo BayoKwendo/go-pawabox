@@ -11,7 +11,7 @@ services:
     restart: always
     network_mode: host
     build:
-      context: ..  # Go one level up
+      context: .  # Go one level up
       dockerfile: ../socket/Dockerfile  # Path to Dockerfile from context
 
     container_name: box_socket_go

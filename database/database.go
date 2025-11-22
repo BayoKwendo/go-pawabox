@@ -761,6 +761,29 @@ func (db *Database) UpdateKPIPayouts(ctx context.Context, mvalue, withTaxAmount,
 	return result.RowsAffected(), nil
 }
 
+// UpdateKPIPayouts updates KPI payouts
+func (db *Database) UpdateKPIPayoutSPIN(ctx context.Context, exciseTaxAmount float64) (int64, error) {
+	query := `UPDATE "kpi"  
+			 SET 
+				 excise_duty_tax_amount = excise_duty_tax_amount + $1, 
+				 rtp = (((payout) / CASE WHEN bet = 0 THEN 1 ELSE bet END) * 100), 
+				 ggr = handle - (payout)
+			 WHERE DATE(created_on) = CURRENT_DATE`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	result, err := conn.Exec(ctx, query, exciseTaxAmount)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update kpi payouts: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
 // UpdateKPIRTP updates KPI RTP
 func (db *Database) UpdateKPIRTP(ctx context.Context) (int64, error) {
 	query := `UPDATE "kpi" 
@@ -824,18 +847,19 @@ func (db *Database) UpdateKPIDeposit(ctx context.Context, mvalue float64) (int64
 func (db *Database) CheckGames(ctx context.Context) ([]map[string]interface{}, error) {
 	query := `SELECT id, name, title, name_init, description, bet_amount, boxes 
              FROM "Games" 
-             WHERE game_type = 'ussd' AND status = 'active' 
+             WHERE status = 'active' 
              ORDER BY CASE id 
-                 WHEN 10 THEN 1
-                 WHEN 16 THEN 2 
-                 WHEN 8 THEN 3
-                 WHEN 9 THEN 4
-                 WHEN 12 THEN 5
-                 WHEN 13 THEN 6
-                 WHEN 11 THEN 7
-                 WHEN 14 THEN 8
-                 WHEN 15 THEN 9
-                 ELSE 10
+                 WHEN 17 THEN 1
+                 WHEN 10 THEN 2
+                 WHEN 16 THEN 3 
+                 WHEN 8 THEN 4
+                 WHEN 9 THEN 5
+                 WHEN 12 THEN 6
+                 WHEN 13 THEN 7
+                 WHEN 11 THEN 8
+                 WHEN 14 THEN 9
+                 WHEN 15 THEN 10
+                 ELSE 11
              END`
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -998,6 +1022,7 @@ func (db *Database) UpdateUserLossCount(ctx context.Context, mvalue float64, id 
 	query := `UPDATE "Player" 
 			 SET lost_count = lost_count + 1,
 				 total_loss_count = total_loss_count + 1, 
+				 rtp_player = (payout / CASE WHEN total_bets = 0 THEN 1 ELSE total_bets END) * 100,
 				 total_losses = total_losses + $1 
 			 WHERE id = $2 `
 
@@ -1083,34 +1108,12 @@ func (db *Database) InsertVerification(ctx context.Context, msisdn, code string,
 }
 
 // UpdateLuckyBet updates bet result
-func (db *Database) UpdateLuckyBet(ctx context.Context, result, reference, betStatus string) (int64, error) {
+func (db *Database) UpdateLuckyBet(ctx context.Context, result, game, reference, betStatus string) (int64, error) {
 	query := `UPDATE "Bets" 
 			 SET result_status = $1, 
 				 status = 'processed', 
-				 results = $2 
-			 WHERE reference = $3 `
-
-	conn, err := db.pool.Acquire(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
-	}
-	defer conn.Release()
-
-	resultExec, err := conn.Exec(ctx, query, betStatus, result, reference)
-	if err != nil {
-		return 0, fmt.Errorf("failed to update lucky bet: %w", err)
-	}
-
-	return resultExec.RowsAffected(), nil
-}
-
-// UpdateLuckyBetWin updates bet with win amount
-func (db *Database) UpdateLuckyBetWin(ctx context.Context, result, reference string, winAmount float64, betStatus string) (int64, error) {
-	query := `UPDATE "Bets" 
-			 SET result_status = $1, 
-				 status = 'processed', 
-				 win_amount = $2, 
-				 results = $3 
+				 results = $2 ,
+				 game = $3
 			 WHERE reference = $4 `
 
 	conn, err := db.pool.Acquire(ctx)
@@ -1119,7 +1122,31 @@ func (db *Database) UpdateLuckyBetWin(ctx context.Context, result, reference str
 	}
 	defer conn.Release()
 
-	resultExec, err := conn.Exec(ctx, query, betStatus, winAmount, result, reference)
+	resultExec, err := conn.Exec(ctx, query, betStatus, result, game, reference)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update lucky bet: %w", err)
+	}
+
+	return resultExec.RowsAffected(), nil
+}
+
+// UpdateLuckyBetWin updates bet with win amount
+func (db *Database) UpdateLuckyBetWin(ctx context.Context, result, game, reference string, winAmount float64, betStatus string) (int64, error) {
+	query := `UPDATE "Bets" 
+			 SET result_status = $1, 
+				 status = 'processed', 
+				 win_amount = $2, 
+				 results = $3,
+				 game=$4
+			 WHERE reference = $5 `
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	resultExec, err := conn.Exec(ctx, query, betStatus, winAmount, result, game, reference)
 	if err != nil {
 		return 0, fmt.Errorf("failed to update lucky bet win: %w", err)
 	}
@@ -1343,10 +1370,8 @@ func (db *Database) CheckAwardsLucky(ctx context.Context, winAmount float64, nam
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
 	defer rows.Close()
-
 	// Now use scanRowsToSingleMap which works with pgx.Rows
 	return db.scanRowsToSingleMap(rows)
-
 }
 
 // InsertHouseBasketLogs inserts basket logs

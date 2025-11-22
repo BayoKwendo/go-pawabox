@@ -15,6 +15,11 @@ require (
 )
 
 require (
+	github.com/jinzhu/inflection v1.0.0 // indirect
+	github.com/jinzhu/now v1.1.5 // indirect
+)
+
+require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/fasthttp/websocket v1.5.3 // indirect
 	github.com/gofiber/adaptor/v2 v2.2.1 // indirect
@@ -51,4 +56,5 @@ require (
 	golang.org/x/net v0.21.0 // indirect
 	golang.org/x/sys v0.32.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
+	gorm.io/gorm v1.31.1
 )
