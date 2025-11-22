@@ -2834,12 +2834,41 @@ func (s *LuckyNumberService) PlaceBetSpin(
 				return SpinResponse{}, err
 			}
 
-			_, _ = s.db.UpdateLuckyBetWin(ctx, utils.ToString(row), "SPIN&WIN", gameID, winAmt, "Win")
+			g, gctx := errgroup.WithContext(ctx)
+
+			g.Go(func() error {
+				_, err := s.db.UpdateLuckyBetWin(
+					gctx,
+					utils.ToString(row),
+					"SPIN&WIN",
+					gameID,
+					winAmt,
+					"Win",
+				)
+				return err
+			})
+
+			g.Go(func() error {
+				_, err := s.db.UpdateKPIPayouts(
+					gctx,
+					amount,
+					tax,
+					0,
+				)
+				return err
+			})
+
+			// -----------------------------------------------------
+			// Wait for both to finish. If ANY fails → returns error
+			// -----------------------------------------------------
+			if err := g.Wait(); err != nil {
+				return SpinResponse{}, fmt.Errorf("parallel update failed: %w", err)
+			}
 
 			return SpinResponse{
 				Row:       row,
 				Win:       true,
-				WinAmount: amount,
+				WinAmount: net,
 				GameID:    gameID,
 			}, nil
 		} else {
