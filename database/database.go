@@ -693,6 +693,63 @@ func (db *Database) UpdateJackpotKitNameInit(ctx context.Context, mvalue float64
 	return result.RowsAffected(), nil
 }
 
+func (db *Database) UpdateJackpotKity(ctx context.Context, id int) (int64, error) {
+	query := `UPDATE "jackpot_kitty"
+			 SET is_locked = 1 ,kitty = kitty-cost, win_count = win_count+ 1
+			 WHERE id = $1`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	result, err := conn.Exec(ctx, query, id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update jackpot kitty with name_init: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
+func (db *Database) UpdatePlayerRestLossJackpot(ctx context.Context, cost float64, id int) (int64, error) {
+	query := `UPDATE "Player"
+			 SET jackpot_amount = jackpot_amount + $1, lost_count = 0
+			 WHERE id = $2`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	result, err := conn.Exec(ctx, query, cost, id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update jackpot kitty with name_init: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
+func (db *Database) UpdateJackpotKitUpdate(ctx context.Context, id int) (int64, error) {
+	query := `UPDATE "jackpot_kitty"
+			 SET is_locked = 1 
+			 WHERE id = $1`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	result, err := conn.Exec(ctx, query, id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update jackpot kitty with name_init: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
 // UpdateKPIHandle updates KPI handle
 func (db *Database) UpdateKPIHandle(ctx context.Context, mvalue float64) (int64, error) {
 	query := `UPDATE "kpi"
@@ -1926,7 +1983,7 @@ func (db *Database) InsertIntoWithdrawalsLucky(ctx context.Context, nonAmount, a
 }
 
 // InsertIntoJackPotWinners inserts jackpot winners
-func (db *Database) InsertIntoJackPotWinners(ctx context.Context, taxAmount float64, items string, gameID int64, gameName, jackpotCategory string, kittyID int64, amount float64, msisdn string) (int64, error) {
+func (db *Database) InsertIntoJackPotWinners(ctx context.Context, taxAmount float64, items string, gameID string, gameName, jackpotCategory string, kittyID int, amount float64, msisdn string) (int64, error) {
 	query := `INSERT INTO "jackpot_winners" 
 			 (tax_amount, items, game_id, game_name, jackpot_category, kitty_id, amount, msisdn, awarded) 
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'yes')`

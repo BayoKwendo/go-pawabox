@@ -2,13 +2,15 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fiberapp/database"
 	"fiberapp/utils"
 	"fmt"
 	"log"
 	"math"
-	"math/rand"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -124,6 +126,7 @@ type SpinResponse struct {
 type PlaceBetResultDisplay struct {
 	Boxes         map[string]WinAmount `json:"Boxes"` // JSON string
 	ResultStatus  string               `json:"ResultStatus"`
+	WinAmount     float64              `json:"WinAmount"`
 	JackPot       string               `json:"JackPot"`
 	GameID        string               `json:"GameID"`
 	SelectedBox   string               `json:"SelectedBox"`
@@ -552,7 +555,7 @@ func (s *LuckyNumberService) PlaceBet(user map[string]interface{}, ussd string, 
 			return PlaceBetResult{}, err
 		}
 
-		return PlaceBetResult{GameResult: game_result, FreeBet: "true", Message: "Free Bet  Successful Placed"}, nil
+		return PlaceBetResult{GameResult: game_result, FreeBet: "true", Message: "Free Bet Placed Successful"}, nil
 	} else {
 		num := user["balance"].(pgtype.Numeric)
 
@@ -582,7 +585,7 @@ func (s *LuckyNumberService) PlaceBet(user map[string]interface{}, ussd string, 
 				return PlaceBetResult{}, err
 			}
 
-			return PlaceBetResult{GameResult: game_result, FreeBet: "false", Message: "Bet Successful Placed"}, nil
+			return PlaceBetResult{GameResult: game_result, FreeBet: "false", Message: "Bet Placed Successful"}, nil
 		} else {
 
 			return PlaceBetResult{}, fmt.Errorf("insufficient balance")
@@ -876,72 +879,8 @@ func (s *LuckyNumberService) ProcessBetAndPlayGame(data map[string]interface{}) 
 		return nil, fmt.Errorf("failed to settle deposit: %w", err)
 	}
 
-	// logrus.Infof("Deposit settled: %+v", deposit)
-
-	// if deposit != nil {
-	// 	msisdn := utils.ToString(deposit["msisdn"])
-
-	// 	// Run user and bet history checks concurrently
-	// 	var user map[string]interface{}
-	// 	var betshist []map[string]interface{}
-	// 	var userErr, betHistErr error
-
-	// 	var wg sync.WaitGroup
-	// 	wg.Add(2)
-
-	// 	// Check user concurrently
-	// 	go func() {
-	// 		defer wg.Done()
-	// 		user, userErr = s.db.CheckUser(ctx, msisdn)
-	// 	}()
-
-	// 	// Check bet history concurrently
-	// 	go func() {
-	// 		defer wg.Done()
-	// 		betshist, betHistErr = s.db.CheckBets(ctx, msisdn)
-	// 	}()
-
-	// 	wg.Wait()
-
-	// 	// Check for errors
-	// 	if userErr != nil {
-	// 		return nil, fmt.Errorf("failed to check user: %w", userErr)
-	// 	}
-	// 	if betHistErr != nil {
-	// 		return nil, fmt.Errorf("failed to check bet history: %w", betHistErr)
-	// 	}
-
-	// 	// Extract data from the request
-	// err := s.playGame(ctx,
-	// 	utils.ToString(data["transaction_id"]),
-	// 	utils.ToString(data["shortcode"]),
-	// 	utils.ToString(data["name"]),
-	// 	betshist,
-	// 	utils.ToString(deposit["game_cat_id"]), // Use toString instead of type assertion
-	// 	user,
-	// 	msisdn,
-	// 	(deposit["amount"]).(float64), // Use toFloat64 instead of type assertion
-	// 	utils.ToString(deposit["selected_box"]),
-	// 	ref,
-	// 	"normal",
-	// 	utils.ToString(data["description"]),
-	// 	utils.ToString(deposit["channel"]),
-	// 	utils.ToString(data["ussd"]),      // Use toString instead of type assertion
-	// 	utils.ToString(data["game_name"])) // Use toString instead of type assertion
-
-	// 	if err != nil {
-	// 		return nil, fmt.Errorf("failed to play game: %w", err)
-	// 	}
 	return nil, err
 
-	// return map[string]interface{}{
-	// 	"Status":        200,
-	// 	"StatusCode":    0,
-	// 	"StatusMessage": "Success",
-	// }, nil
-	// }
-
-	// return nil, fmt.Errorf("deposit settlement failed")
 }
 
 // Helper methods
@@ -949,7 +888,7 @@ func (s *LuckyNumberService) randomString(length int) string {
 	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	result := make([]byte, length)
 	for i := range result {
-		result[i] = charset[rand.Intn(len(charset))]
+		result[i] = charset[cryptoRandIndex(len(charset))]
 	}
 	return string(result)
 }
@@ -1236,7 +1175,7 @@ func (s *LuckyNumberService) playGame(ctx context.Context, history interface{}, 
 	}
 
 	// Determine game outcome
-	minLossCount := rand.Intn(int(settingMap["min_loss_count"].(float64))) + 1
+	minLossCount := cryptoRandIndex(int(settingMap["min_loss_count"].(float64))) + 1
 
 	playerFrequency := int64(0)
 	if freq, ok := player["frequency"].(int32); ok {
@@ -1254,7 +1193,7 @@ func (s *LuckyNumberService) playGame(ctx context.Context, history interface{}, 
 
 	// Handle jackpot win condition
 	if playerFrequency > 10 && playerLostCount > int64(minLossCount) && jackpotWinner != nil {
-		return PlaceBetResultDisplay{}, s.handleJackpotWin(ctx, player, msisdn, betAmount, selectedNumber, reference, settingMap, gameMap, kpiMap, jackpotWinner)
+		return s.handleJackpotWin(ctx, player, msisdn, betAmount, utils.ToInt(selectedNumber), reference, settingMap, gameMap, kpiMap, jackpotWinner)
 	} else {
 		return s.handleNormalGame(ctx, player, msisdn, betAmount, selectedNumber, reference, settingMap, gameMap, kpiMap, minLossCount)
 	}
@@ -1271,6 +1210,89 @@ func (s *LuckyNumberService) bet(ctx context.Context, reference string, playerID
 		return err
 	}
 
+	return nil
+}
+
+// win records a win for a player
+func (s *LuckyNumberService) winJackpot(ctx context.Context, playerID int64, payout, bets float64, winItem string, withholdTax, taxDeductedAmount, amount float64, msisdn, reference string) error {
+	amountNew := round(amount)
+	withholdTaxNew := round(withholdTax)
+	taxDeductedAmountNew := round(taxDeductedAmount)
+
+	// Insert into withdrawals
+	_, err := s.db.InsertIntoWithdrawalsLucky(ctx, amount, taxDeductedAmountNew, withholdTaxNew, winItem, msisdn, reference)
+	if err != nil {
+		return err
+	}
+
+	// Check settings
+	setting, err := s.db.CheckSetting(ctx)
+	if err != nil {
+		return err
+	}
+
+	if setting != nil {
+		checkWithdrawal, err := s.db.CheckWithdrawalsPawaBoxKe(ctx, reference)
+		if err != nil {
+			return err
+		}
+
+		if checkWithdrawal != nil && checkWithdrawal["msisdn"] != nil {
+			// Insert tax queue
+			_, err := s.db.InsertTaxQueue(ctx, reference, amount, withholdTax, taxDeductedAmount, "withholding", msisdn)
+			if err != nil {
+				return err
+			}
+
+			// Insert B2B withdrawal
+			_, err = s.db.InsertB2BWithdrawalB2B(ctx, reference, msisdn, taxDeductedAmountNew, "Won")
+			if err != nil {
+				return err
+			}
+			_, err = s.db.InsertWithdrawalQueue(ctx, reference, msisdn, taxDeductedAmountNew, "http?")
+			if err != nil {
+				return err
+			}
+
+			// Update various records
+			tasks := []func() error{
+				func() error {
+					_, err := s.db.UpdateRESTLossUser(ctx, amountNew, playerID)
+					return err
+				},
+				func() error {
+					_, err := s.db.InsertCustomerLogsPawaBoxKe(ctx, amountNew, "withdraw", utils.ToString(playerID), "customer withdrawal: luckynumber", reference)
+					return err
+				},
+				func() error {
+					_, err := s.db.UpdateHouseLuckyWins(ctx, amountNew)
+					return err
+				},
+				func() error {
+					_, err := s.db.UpdateHouseLuckyBasketWins(ctx, amountNew)
+					return err
+				},
+				func() error {
+					_, err := s.db.InsertHouseBasketLogs(ctx, amountNew, 0, -amountNew, fmt.Sprintf("%.2f deducted from the basket:- game id %s", amountNew, reference))
+					return err
+				},
+				func() error {
+					_, err := s.db.InsertHouseLogsPawaBoxKeGameID(ctx, reference, "total_wins", msisdn, amountNew)
+					return err
+				},
+				func() error {
+					_, err := s.db.UpdatePawaBoxKeWithdrawalRequest(ctx, reference)
+					return err
+				},
+			}
+
+			for _, task := range tasks {
+				if err := task(); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -1410,10 +1432,283 @@ func (s *LuckyNumberService) isJackpotGame(gameInit string) bool {
 	return false
 }
 
-func (s *LuckyNumberService) handleJackpotWin(ctx context.Context, player map[string]interface{}, msisdn string, betAmount float64, selectedNumber, reference string, setting, game, kpi, jackpotWinner map[string]interface{}) error {
-	// Implementation for jackpot win handling
-	// This would include the complex jackpot win logic from Python
-	return nil
+func (s *LuckyNumberService) GenerateWinJackpotWinner(
+	ctx context.Context,
+	msisdn string,
+	kpi map[string]interface{},
+	defaultRTP, playerRTP float64,
+	reference string,
+	betAmount float64,
+	selectedNumber int,
+	playerID int,
+	minWinMultiplier, maxWinMultiplier float64,
+	maxExposure float64,
+	nameInit string,
+	playerCount, maxLossCount int,
+	maxWon, vigPercentage float64,
+	itemWinValue float64,
+	itemWon string) (map[int]WinAmount, error) {
+	//-------------------------------------
+	// Step 1 — Choose 7 unique box numbers
+	//-------------------------------------
+	chosen := cryptoRandUniqueInts(1, 8, 7) // {1..7}
+	numZeroBoxes := cryptoRandInt(0, 3)     // 0–2
+
+	boxes := make(map[int]WinAmount)
+
+	minWinAmount := betAmount * minWinMultiplier
+	maxWinAmount := maxExposure
+
+	//-------------------------------------
+	// Step 2 — Assign random win amounts
+	//-------------------------------------
+	for _, num := range chosen {
+
+		var winAmt float64
+
+		if cryptoRandFloat() < 0.5 {
+			// small range
+			winAmt = cryptoRandFloatRange(minWinAmount, minWinAmount*20)
+		} else {
+			winAmt = cryptoRandFloatRange(minWinAmount, maxWinAmount)
+		}
+
+		boxes[num] = WinAmount{
+			Value: winAmt,
+			Item:  FormatToMZN(winAmt),
+		}
+	}
+
+	//-------------------------------------
+	// Step 3 — Zero out random boxes (except selected box)
+	//-------------------------------------
+	candidates := make([]int, 0)
+	for _, n := range chosen {
+		if n != selectedNumber {
+			candidates = append(candidates, n)
+		}
+	}
+
+	zeroBoxes := cryptoRandSample(candidates, numZeroBoxes)
+	for _, zb := range zeroBoxes {
+		boxes[zb] = WinAmount{Value: 0, Item: "0"}
+	}
+
+	//-------------------------------------
+	// Step 4 — Add a random AWARD box
+	//-------------------------------------
+	award, err := s.db.CheckAwardsLuckyRandom(ctx, nameInit)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(candidates) > 0 {
+		rnd := candidates[cryptoRandInt(0, len(candidates))]
+		boxes[rnd] = WinAmount{
+			Value: utils.ToFloat64(award["value"]),
+			Item:  utils.ToString(award["name"]),
+		}
+	}
+
+	//-------------------------------------
+	// Step 5 — Set selected box winning
+	//-------------------------------------
+	boxes[selectedNumber] = WinAmount{
+		Value: itemWinValue,
+		Item:  itemWon,
+	}
+
+	return boxes, nil
+}
+
+func (s *LuckyNumberService) handleJackpotWin(
+	ctx context.Context,
+	player map[string]interface{},
+	msisdn string,
+	betAmount float64,
+	selectedNumber int,
+	reference string,
+	setting, game, kpi, jackpotWinner map[string]interface{}) (PlaceBetResultDisplay, error) {
+	// 1. Preconditions
+	// 2. Update jackpot Kity (lock-in winner)
+	// -------------------------------
+	_, err := s.db.UpdateJackpotKitUpdate(ctx, utils.ToInt(jackpotWinner["id"]))
+
+	defaultRTP := utils.ToFloat64(setting["default_rtp"])
+	playerPayout := utils.ToFloat64(player["payout"])
+	playerID := utils.ToInt64(player["id"])
+
+	playerTotalBets := utils.ToFloat64(player["total_bets"])
+	withholding := utils.ToFloat64(setting["withholding"])
+	jackpotpercentage := utils.ToFloat64(setting["jackpot_percentage"])
+	mx_win := playerTotalBets + betAmount - playerPayout
+	playerFreeBet := utils.ToInt64(player["free_bet"])
+
+	default_e := defaultRTP + jackpotpercentage
+	max_won := (default_e / 100) * mx_win
+	maxWon := utils.ToFloat64(max_won)
+	// -------------------------------
+	// 3. Generate jackpot win
+	// -------------------------------
+	winBoxes, err := s.GenerateWinJackpotWinner(
+		ctx,
+		msisdn,
+		kpi,
+		defaultRTP,
+		utils.ToFloat64(player["rtp"]),
+		reference,
+		betAmount,
+		selectedNumber,
+		utils.ToInt(player["id"]),
+		utils.ToFloat64(setting["min_win_multipier"]),
+		utils.ToFloat64(setting["max_win_multipier"]),
+		utils.ToFloat64(game["max_exposure"]),
+		utils.ToString(game["name_init"]),
+		utils.ToInt(player["lost_count"]),
+		utils.ToInt(setting["min_loss_count"]),
+		maxWon,
+		utils.ToFloat64(setting["vig_percentage"]),
+		utils.ToFloat64(jackpotWinner["cost"]),
+		utils.ToString(jackpotWinner["item_name"]),
+	)
+	// -------------------------------
+	// 4. Adjust jackpot win amount if needed
+	// -------------------------------
+	nameInit := utils.ToString(jackpotWinner["name_init"])
+	isSpecialJackpot := nameInit == "pw_jackport" || nameInit == "pw_ist" || nameInit == "pw_mega"
+	if isSpecialJackpot {
+		winBox := winBoxes[selectedNumber]
+		winBox.Value = utils.ToFloat64(jackpotWinner["cost"])
+		winBox.Item = utils.ToString(jackpotWinner["item_name"])
+		winBoxes[selectedNumber] = winBox
+
+	}
+	if winBoxes[selectedNumber].Value < 1 {
+		winBox := winBoxes[selectedNumber]
+		winBox.Value = utils.ToFloat64(jackpotWinner["cost"])
+		winBox.Item = utils.ToString(jackpotWinner["item_name"])
+		winBoxes[selectedNumber] = winBox
+
+	}
+	winAmount := winBoxes[selectedNumber].Value
+	winItem := winBoxes[selectedNumber].Item
+	logrus.Infof("Box %d wins jackpot: %+v", selectedNumber, winBoxes)
+	// -------------------------------
+	// 5. Mark bet as WIN
+	// -------------------------------
+	resultMessage := fmt.Sprintf("Box %s wins. Numbers: %+v", selectedNumber, winAmount)
+	logrus.Info(resultMessage)
+	// 6. Calculate withholding tax
+
+	withholdTax := (withholding / 100) * winAmount
+	taxDeductedAmount := winAmount - withholdTax
+	// -------------------------------
+
+	g, ctx := errgroup.WithContext(ctx)
+
+	// 1. Update bet as win
+	g.Go(func() error {
+		_, err := s.db.UpdateLuckyBetWin(
+			ctx,
+			fmt.Sprintf("Box %d wins. Numbers: %+v", selectedNumber, winBoxes),
+			"PAWABOX",
+			reference,
+			winAmount,
+			"Win",
+		)
+		return err
+	})
+
+	// 2. Update jackpot entry
+	g.Go(func() error {
+		_, err := s.db.UpdateJackpotKity(
+			ctx,
+			utils.ToInt(jackpotWinner["id"]),
+		)
+		return err
+	})
+
+	// 3. Update player loss stats
+	g.Go(func() error {
+		_, err := s.db.UpdatePlayerRestLossJackpot(
+			ctx,
+			winAmount,
+			utils.ToInt(player["id"]),
+		)
+		return err
+	})
+	// 4. Insert into Jackpot winners
+	g.Go(func() error {
+		_, err := s.db.InsertIntoJackPotWinners(
+			ctx,
+			taxDeductedAmount,
+			winItem,
+			reference,
+			utils.ToString(game["name"]),
+			utils.ToString(jackpotWinner["item_name"]),
+			utils.ToInt(jackpotWinner["id"]),
+			winAmount,
+			msisdn,
+		)
+		return err
+	})
+	// Wait for all goroutines
+	if err := g.Wait(); err != nil {
+		return PlaceBetResultDisplay{}, err
+	}
+
+	// winBoxes[selectedNumber] = WinAmount{
+	// 	Value: taxDeductedAmount,
+	// 	Item:  FormatToMZN(taxDeductedAmount),
+	// }
+	// // Handle win logic
+
+	converted := make(map[string]WinAmount)
+
+	for k, v := range winBoxes {
+		converted[fmt.Sprintf("%d", k)] = v
+	}
+	// msg := s.createWinMessage(converted)
+	message := s.createWinMessage(utils.ToString(selectedNumber), converted, playerFreeBet, reference, withholding, withholdTax)
+	logrus.Infof("Player MSISDN: %s", msisdn)
+	resultd, err := s.ResultDisplay(utils.ToString(selectedNumber), converted, playerFreeBet, reference)
+	// Queue SMS
+	senderID := "Funua Pesa"
+	_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+	if err != nil {
+		return PlaceBetResultDisplay{}, fmt.Errorf("failed to insert SMS queue: %w", err)
+	}
+	// -------------------------------
+	if !isSpecialJackpot {
+		err = s.winJackpot(ctx, playerID, playerPayout, playerTotalBets, winItem, withholdTax, taxDeductedAmount, winAmount, msisdn, reference)
+		if err != nil {
+			return PlaceBetResultDisplay{}, fmt.Errorf("failed to handle win: %w", err)
+		}
+		message := s.createJackpotMessage(utils.ToString(selectedNumber), converted, playerFreeBet, reference, withholding, taxDeductedAmount, withholdTax)
+		_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+	}
+
+	var boxes map[string]WinAmount
+	if err := json.Unmarshal([]byte(resultd), &boxes); err != nil {
+		logrus.Errorf("Failed to unmarshal Boxes JSON: %v", err)
+		return PlaceBetResultDisplay{}, err
+	}
+	// 10. Return final response
+	// -------------------------------
+	mresult := PlaceBetResultDisplay{
+		Boxes:         boxes,
+		ResultStatus:  "Win",
+		WinAmount:     0,
+		JackPot:       "True",
+		GameID:        reference,
+		SelectedBox:   utils.ToString(selectedNumber),
+		ResultMessage: message,
+	}
+
+	logrus.Infof("Player %s lost bet: %.2f", msisdn, betAmount)
+
+	// return struct + nil error
+	return mresult, nil
 }
 
 func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[string]interface{}, msisdn string, betAmount float64, selectedNumber, reference string, setting, game, kpi map[string]interface{}, minLossCount int) (PlaceBetResultDisplay, error) {
@@ -1431,7 +1726,13 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 	vigPercentage := utils.ToFloat64(setting["vig_percentage"])
 	rtpOverload := utils.ToFloat64(setting["rtp_overload"])
 	withholding := utils.ToFloat64(setting["withholding"])
-	maxWon := utils.ToFloat64(setting["max_won"])
+	jackpotpercentage := utils.ToFloat64(setting["jackpot_percentage"])
+
+	mx_win := playerTotalBets + betAmount - playerPayout
+
+	default_e := defaultRTP + jackpotpercentage
+	max_won := (default_e / 100) * mx_win
+	maxWon := utils.ToFloat64(max_won)
 
 	gameMaxExposure := utils.ToFloat64(game["max_exposure"])
 	gameNameInit := utils.ToString(game["name_init"])
@@ -1479,7 +1780,7 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 	}
 
 	// Random increment calculation
-	randomIncrement := rand.Float64() * 10 // Random between 0-10
+	randomIncrement := cryptoRandFloat() * 10 // Random between 0-10
 	increment := (defaultRTP / 100) * randomIncrement
 
 	// Get current RTP and adjust if needed - add safety check
@@ -1609,6 +1910,7 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		mresult := PlaceBetResultDisplay{
 			Boxes:         boxes,
 			ResultStatus:  "Win",
+			WinAmount:     winAmountValue,
 			JackPot:       "False",
 			GameID:        reference,
 			SelectedBox:   selectedNumber,
@@ -1666,6 +1968,7 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		mresult := PlaceBetResultDisplay{
 			Boxes:         boxes,
 			ResultStatus:  "Loss",
+			WinAmount:     0,
 			JackPot:       "False",
 			GameID:        reference,
 			SelectedBox:   selectedNumber,
@@ -1682,12 +1985,11 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 // GenerateWinAmounts generates unique win amounts for each box number
 func (s *LuckyNumberService) GenerateWinAmounts(ctx context.Context, params GenerateWinAmountsParams) (map[string]WinAmount, error) {
 	// Initialize random
-	rand.Seed(time.Now().UnixNano())
 
 	// Generate 7 unique random numbers between 1-7
-	chosenNumbers := generateUniqueNumbers(1, 8, 7)
-	numZeroBoxes := rand.Intn(3) + 1 // 1-3
-	rand.Intn(2)                     // 0-1
+	chosenNumbers := cryptoRandUniqueInts(1, 8, 7)
+	numZeroBoxes := cryptoRandInt(0, 3) // 0–2
+	// numZeroBoxes := cryptoRandIndex(3) + 1 // 1-3
 
 	boxes := make(map[string]WinAmount)
 	totalAssigned := 0.0
@@ -1715,7 +2017,7 @@ func (s *LuckyNumberService) GenerateWinAmounts(ctx context.Context, params Gene
 	winAward := ""
 
 	// Select random boxes for awards
-	numSelectedBoxes := rand.Intn(3) // 0-2
+	numSelectedBoxes := cryptoRandInt(1, 2) // 0-2
 	selectedBoxes := selectRandomBoxes(chosenNumbers, numSelectedBoxes)
 
 	logrus.Infof("Selected boxes: %v", selectedBoxes)
@@ -1725,12 +2027,13 @@ func (s *LuckyNumberService) GenerateWinAmounts(ctx context.Context, params Gene
 		numStr := fmt.Sprintf("%d", num)
 		var winAmount float64
 
-		if rand.Float64() < 0.5 {
+		if cryptoRandFloat() < 0.5 {
 			// 50% chance for smaller wins
-			winAmount = rand.Float64()*(minWinAmount*20-minWinAmount) + minWinAmount
+			winAmount = cryptoRandFloatRange(minWinAmount, minWinAmount*20)
+
 		} else {
 			// 50% chance for larger wins
-			winAmount = rand.Float64()*(maxWinAmountCalc-minWinAmount) + minWinAmount
+			winAmount = cryptoRandFloatRange(minWinAmount, maxWinAmountCalc)
 		}
 
 		// Check for awards
@@ -1748,13 +2051,13 @@ func (s *LuckyNumberService) GenerateWinAmounts(ctx context.Context, params Gene
 			logrus.Infof("Selected number: %s, Current num: %d", params.SelectedNumber, num)
 
 			var specialWinAmount float64
-			if rand.Float64() < 0.5 {
-				specialWinAmount = rand.Float64()*(minWinAmount*20-minWinAmount) + minWinAmount
-				if rand.Float64() < 0.5 {
-					specialWinAmount = rand.Float64()*(800-minWinAmount) + minWinAmount
+			if cryptoRandFloat() < 0.5 {
+				specialWinAmount = cryptoRandFloat()*(minWinAmount*20-minWinAmount) + minWinAmount
+				if cryptoRandFloat() < 0.5 {
+					specialWinAmount = cryptoRandFloat()*(800-minWinAmount) + minWinAmount
 				}
 			} else {
-				specialWinAmount = rand.Float64()*(800-minWinAmount) + minWinAmount
+				specialWinAmount = cryptoRandFloat()*(800-minWinAmount) + minWinAmount
 			}
 
 			if specialWinAmount > params.MaxWon {
@@ -1830,7 +2133,7 @@ func (s *LuckyNumberService) GenerateWinAmounts(ctx context.Context, params Gene
 
 		// Set random min amount box
 		if len(candidateBoxes) > 0 {
-			randomMinAmount := rand.Float64()*(minWinAmount*1.2-minWinAmount) + minWinAmount
+			randomMinAmount := cryptoRandFloat()*(minWinAmount*1.2-minWinAmount) + minWinAmount
 			exposureMinBox := selectRandomBox(candidateBoxes)
 			boxes[fmt.Sprintf("%d", exposureMinBox)] = WinAmount{
 				Value: randomMinAmount,
@@ -1881,7 +2184,7 @@ func (s *LuckyNumberService) handleForceWin(ctx context.Context, boxes map[strin
 	forcedAmount = math.Min(forcedAmount, maxAllowedPayout)
 
 	// Add random variation
-	forcedAmount *= rand.Float64()*0.2 + 0.9 // ±10%
+	forcedAmount *= cryptoRandFloat()*0.2 + 0.9 // ±10%
 	forcedAmount = math.Min(math.Max(forcedAmount, minWinAmount), maxWinAmount)
 
 	// Recalculate RTP
@@ -1962,16 +2265,16 @@ func (s *LuckyNumberService) handlePotentialWin(ctx context.Context, boxes map[s
 	// RTP adjustment logic
 	if params.PlayerLostCount >= int64(params.MinLossCount) && currentRTPDay > params.DefaultRTP {
 		if kpiBet != 0 {
-			margin := rand.Float64()*0.8 + 0.1 // 0.1-0.9%
+			margin := cryptoRandFloat()*0.8 + 0.1 // 0.1-0.9%
 			targetRTP := (params.DefaultRTP + params.AdjustmentRTP) - margin
 			maxAllowedPayout := (targetRTP/100)*kpiBet - utils.ToFloat64(params.KPI["payout"])
 
 			if maxAllowedPayout > minWinAmount {
-				amount = rand.Float64()*(maxAllowedPayout-minWinAmount) + minWinAmount
+				amount = cryptoRandFloat()*(maxAllowedPayout-minWinAmount) + minWinAmount
 			} else {
-				randomPercentage := rand.Float64()*0.39 + 0.6 // 0.6-0.99
+				randomPercentage := cryptoRandFloat()*0.39 + 0.6 // 0.6-0.99
 				minRandom := params.BetAmount + ((minWinAmount - params.BetAmount) * randomPercentage)
-				amount = rand.Float64()*(minWinAmount-minRandom) + minRandom
+				amount = cryptoRandFloat()*(minWinAmount-minRandom) + minRandom
 			}
 
 			amount = math.Round(amount*100) / 100
@@ -2012,24 +2315,28 @@ func generateUniqueNumbers(min, max, count int) []int {
 	for i := range numbers {
 		numbers[i] = min + i
 	}
-	rand.Shuffle(len(numbers), func(i, j int) {
-		numbers[i], numbers[j] = numbers[j], numbers[i]
-	})
+
+	// Correct shuffle using CryptoShuffle
+	CryptoShuffle(numbers)
+
+	if count > len(numbers) {
+		count = len(numbers)
+	}
 	return numbers[:count]
 }
-
 func selectRandomBoxes(numbers []int, count int) []int {
 	if count >= len(numbers) {
 		return numbers
 	}
-	rand.Shuffle(len(numbers), func(i, j int) {
-		numbers[i], numbers[j] = numbers[j], numbers[i]
-	})
+
+	// Shuffle the slice using a cryptographic RNG
+	CryptoShuffle(numbers)
+
 	return numbers[:count]
 }
 
 func selectRandomBox(numbers []int) int {
-	return numbers[rand.Intn(len(numbers))]
+	return numbers[cryptoRandIndex(len(numbers))]
 }
 
 func contains(slice []int, item int) bool {
@@ -2091,6 +2398,20 @@ func (s *LuckyNumberService) createWinMessage(selectedNumber string, winAmounts 
 		reference,
 		int(withholding),
 		FormatToMZN(withholdTax),
+	)
+}
+
+func (s *LuckyNumberService) createJackpotMessage(selectedNumber string, winAmounts map[string]WinAmount, freeBet int64, reference string, withholding, tax_deducted_amount, payout float64) string {
+	var boxes []string
+	for num, winAmount := range winAmounts {
+		boxes = append(boxes, fmt.Sprintf("Box %s - %s", num, winAmount.Item))
+	}
+	sort.Strings(boxes)
+
+	return fmt.Sprintf(utils.Texts["results"]["jackpot"],
+		reference,
+		winAmounts[selectedNumber].Item,
+		tax_deducted_amount,
 	)
 }
 
@@ -2755,7 +3076,7 @@ func (s *LuckyNumberService) PlaceBetSpin(
 // }
 
 func forcedMatchingRow(symbols []string) []string {
-	s := symbols[rand.Intn(len(symbols))]
+	s := symbols[cryptoRandIndex(len(symbols))]
 	return []string{s, s, s}
 }
 
@@ -2763,7 +3084,7 @@ func randomNonMatchingRow(symbols []string) []string {
 	row := make([]string, 3)
 	for {
 		for i := 0; i < 3; i++ {
-			row[i] = symbols[rand.Intn(len(symbols))]
+			row[i] = symbols[cryptoRandIndex(len(symbols))]
 		}
 		if !(row[0] == row[1] && row[1] == row[2]) {
 			return row
@@ -2783,7 +3104,7 @@ func randomNonMatchingRow(symbols []string) []string {
 // 	return min + r*(max-min), nil
 // }
 
-// row[i] = symbols[rand.Intn(len(symbols))]
+// row[i] = symbols[cryptoRandIndex(len(symbols))]
 
 // idx, _ := SecureInt(int64(len(symbols)))
 // row[i] = symbols[idx]
@@ -2962,3 +3283,92 @@ func (s *LuckyNumberService) loadSpinData(ctx context.Context, gameCatID, msisdn
 
 	return &r, nil
 }
+
+func cryptoRandSample(arr []int, k int) []int {
+	if k > len(arr) {
+		k = len(arr)
+	}
+
+	out := []int{}
+	tmp := append([]int{}, arr...)
+
+	for i := 0; i < k; i++ {
+		idx := cryptoRandInt(0, len(tmp))
+		out = append(out, tmp[idx])
+		tmp = append(tmp[:idx], tmp[idx+1:]...)
+	}
+
+	return out
+}
+
+func cryptoRandFloatRange(min, max float64) float64 {
+	return min + cryptoRandFloat()*(max-min)
+}
+
+func cryptoRandFloat() float64 {
+	b := make([]byte, 8)
+	rand.Read(b)
+	u := binary.LittleEndian.Uint64(b)
+	return float64(u) / float64(math.MaxUint64)
+}
+
+func cryptoRandUniqueInts(min, max, count int) []int {
+	arr := []int{}
+	for i := min; i < max; i++ {
+		arr = append(arr, i)
+	}
+
+	out := []int{}
+	for len(out) < count && len(arr) > 0 {
+		idx := cryptoRandInt(0, len(arr))
+		out = append(out, arr[idx])
+		arr = append(arr[:idx], arr[idx+1:]...)
+	}
+	return out
+}
+
+func cryptoRandInt(min, max int) int {
+	if max <= min {
+		return min
+	}
+	nBig, _ := rand.Int(rand.Reader, big.NewInt(int64(max-min)))
+	return int(nBig.Int64()) + min
+}
+
+func cryptoRandIndex(length int) int {
+	if length <= 0 {
+		return 0
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(length)))
+	if err != nil {
+		panic(err) // handle error properly in real code
+	}
+	return int(n.Int64())
+}
+
+func CryptoShuffle[T any](numbers []T) {
+	n := len(numbers)
+	for i := n - 1; i > 0; i-- {
+		// Generate a random index j ∈ [0, i]
+		jBig, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			panic(err)
+		}
+		j := int(jBig.Int64())
+
+		// Swap numbers[i] and numbers[j]
+		numbers[i], numbers[j] = numbers[j], numbers[i]
+	}
+}
+
+// func CryptoShuffle[T any](numbers []T) {
+// 	n := len(numbers)
+// 	for i := n - 1; i > 0; i-- {
+// 		jBig, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+// 		if err != nil {
+// 			panic(err) // handle error properly
+// 		}
+// 		j := int(jBig.Int64())
+// 		numbers[i], numbers[j] = numbers[j], numbers[i]
+// 	}
+// }
