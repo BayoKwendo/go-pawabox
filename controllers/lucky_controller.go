@@ -864,6 +864,10 @@ func PlaceBetSpin(c *fiber.Ctx) error {
 
 	if balance >= amount {
 
+		logrus.Infof("rtpLimit : %s", amount)
+
+		logrus.Infof("rtpLimit : %s", user)
+
 		// place bet
 		result, err := lucky.PlaceBetSpin(
 			user,

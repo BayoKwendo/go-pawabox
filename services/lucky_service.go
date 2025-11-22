@@ -2204,8 +2204,8 @@ func (s *LuckyNumberService) PlaceBetSpin(
 	channel, mode string,
 ) (SpinResponse, error) {
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// s.mu.Lock()
+	// defer s.mu.Unlock()
 
 	ctx := context.Background()
 	gameID := "SPIN_" + s.randomString(10)
@@ -2898,10 +2898,10 @@ func (s *LuckyNumberService) loadSpinData(ctx context.Context, gameCatID, msisdn
 	var (
 		r     SpinPrerequisites
 		wg    sync.WaitGroup
-		errCh = make(chan error, 5)
+		errCh = make(chan error, 4)
 	)
 
-	wg.Add(5)
+	wg.Add(4)
 
 	go func() {
 		defer wg.Done()
