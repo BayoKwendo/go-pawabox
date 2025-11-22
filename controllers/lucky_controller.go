@@ -227,7 +227,7 @@ func SettleBTLuckyNumber(c *fiber.Ctx) error {
 
 // SettleBetLuckyNumber - validates IPs then processes
 func SettleBetLuckyNumber(c *fiber.Ctx) error {
-	allowed := map[string]bool{"172.16.0.131": true, "172.16.0.104": true, "127.0.0.1": true, "172.16.0.108": true}
+	allowed := map[string]bool{"172.16.0.131": true, "172.16.0.104": true, "172.16.0.184": true, "127.0.0.1": true, "172.16.0.108": true}
 
 	clientIP := c.Get("X-Forwarded-For", c.IP())
 	if strings.Contains(clientIP, ",") {
