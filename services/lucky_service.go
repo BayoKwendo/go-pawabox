@@ -535,7 +535,7 @@ func (s *LuckyNumberService) SendPaymentRequest(msisdn string, amount string, ga
 		Timeout: 20 * time.Second,
 	}
 
-	req, err := http.NewRequest("POST", "https://paymentapi.strikebet.co.ke/api/v1/initiate_deposit", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", "http://172.16.0.184:8008/api/v1/initiate_deposit", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("creating request failed: %w", err)
 	}
