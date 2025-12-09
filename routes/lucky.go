@@ -12,9 +12,9 @@ func RegisterRoutes(app *fiber.App) {
 
 	api.Get("/", controllers.Hello)
 	api.Get("/test", controllers.Test)
-	api.Post("/place_bet_luckynumber", utils.JWTMiddleware(), controllers.PlaceBetLuckyNumber)
+	api.Post("/place_bet_pawabox", utils.JWTMiddleware(), controllers.PlaceBetLuckyNumber)
 	api.Post("/settle_bt_luckynumber", controllers.SettleBTLuckyNumber)
-	api.Post("/settle_bet_luckynumber", controllers.SettleBetLuckyNumber)
+	api.Post("/settle_transaction", controllers.SettleBetLuckyNumber)
 
 	api.Post("/place_bet_spin", utils.JWTMiddleware(), controllers.PlaceBetSpin)
 

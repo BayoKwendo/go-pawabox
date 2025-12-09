@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -11,6 +12,7 @@ import (
 	"log"
 	"math"
 	"math/big"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -263,7 +265,7 @@ func (s *LuckyNumberService) VerifyOTP(msisdn, otp string) (int64, error) {
 	return remain, nil
 }
 
-func (s *LuckyNumberService) CheckUser(msisdn string) (map[string]interface{}, error) {
+func (s *LuckyNumberService) CheckUser(msisdn string, name string) (map[string]interface{}, error) {
 	if s == nil || s.db == nil {
 		log.Printf("PANIC PREVENTION: s=%p, s.db=%p", s, s.db)
 		return nil, fmt.Errorf("service or database not initialized")
@@ -280,7 +282,7 @@ func (s *LuckyNumberService) CheckUser(msisdn string) (map[string]interface{}, e
 	// Create user if doesn't exist
 	if user == nil {
 		carrier := s.getMNOCategory(msisdn)
-		_, err := s.db.CreateUser(ctx, carrier, msisdn)
+		_, err := s.db.CreateUser(ctx, carrier, msisdn, name)
 		if err != nil {
 			logrus.Errorf("Error creating user: %v", err)
 			return nil, err
@@ -437,9 +439,7 @@ func (s *LuckyNumberService) InsertVerification(msisdn string, code string, expi
 		code,
 	)
 	// Queue SMS
-	senderID := "Funua Pesa"
-	_, er := s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
-
+	er := s.sendsms(msisdn, message)
 	if er != nil {
 		return fmt.Errorf("failed to insert SMS queue: %w", er)
 	}
@@ -462,7 +462,7 @@ func (s *LuckyNumberService) IniatatDeposit(msisdn string, amount float64, chann
 	mnoCategory := s.getMNOCategory(msisdn)
 	// 2) Create user if missing (do this synchronously)
 	if user == nil {
-		if _, err := s.db.CreateUser(ctx, mnoCategory, msisdn); err != nil {
+		if _, err := s.db.CreateUser(ctx, mnoCategory, msisdn, ""); err != nil {
 			logrus.Errorf("CreateUser error: %v", err)
 			return PlaceBetResult{}, err
 		}
@@ -475,9 +475,15 @@ func (s *LuckyNumberService) IniatatDeposit(msisdn string, amount float64, chann
 		return PlaceBetResult{}, err
 	}
 	// 4) generate id / game id
-	gameID := s.randomString(10)
+	gameID := "WEB_" + s.randomString(10)
 	// 5) Run the two inserts concurrently: InsertIntoDepositLuckyRequest and InsertSTK
+
 	g, egCtx := errgroup.WithContext(ctx)
+
+	err = s.SendPaymentRequest(msisdn, utils.ToString(amount), gameID)
+	if err != nil {
+		fmt.Println("Payment error:", err)
+	}
 
 	// Insert deposit request
 	g.Go(func() error {
@@ -506,6 +512,89 @@ func (s *LuckyNumberService) IniatatDeposit(msisdn string, amount float64, chann
 
 	// Success
 	return PlaceBetResult{FreeBet: "false", Message: "Kukamilisha BET weka M-Pesa PIN yako."}, nil
+}
+
+func (s *LuckyNumberService) SendPaymentRequest(msisdn string, amount string, gameID string) error {
+
+	// Generate gameID
+
+	// Create request body JSON
+	payload := map[string]interface{}{
+		"amount":    amount,
+		"msisdn":    msisdn,
+		"reference": gameID,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("json marshal error: %w", err)
+	}
+
+	// Prepare HTTPS client
+	client := &http.Client{
+		Timeout: 20 * time.Second,
+	}
+
+	req, err := http.NewRequest("POST", "https://paymentapi.strikebet.co.ke/api/v1/initiate_deposit", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("creating request failed: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send request
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("https request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("api error: status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (s *LuckyNumberService) sendsms(msisdn string, message string) error {
+
+	ctx := context.Background()
+	senderID := "LuckyNumber"
+	_, err := s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+
+	// Create request body JSON
+	payload := map[string]interface{}{
+		"message": message,
+		"msisdn":  msisdn,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("json marshal error: %w", err)
+	}
+
+	// Prepare HTTPS client
+	client := &http.Client{
+		Timeout: 20 * time.Second,
+	}
+
+	req, err := http.NewRequest("POST", "https://paymentapi.strikebet.co.ke/api/v1/insert_sms", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("creating request failed: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send request
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("https request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("api error: status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // PlaceBet handles the main betting logic
@@ -625,7 +714,7 @@ func (s *LuckyNumberService) HandleDepositAndGame(data map[string]interface{}) e
 		// Create user if doesn't exist
 		if user == nil {
 			mnoCategory := s.getMNOCategory(msisdn)
-			_, err = s.db.CreateUser(ctx, mnoCategory, msisdn)
+			_, err = s.db.CreateUser(ctx, mnoCategory, msisdn, "")
 			if err != nil {
 				return err
 			}
@@ -701,7 +790,7 @@ func (s *LuckyNumberService) SettleDeposit(msisdn string, amount float64, name, 
 		// Create user if doesn't exist
 		if user == nil {
 			carrier := s.getMNOCategory(msisdn)
-			_, err := s.db.CreateUser(ctx, carrier, msisdn)
+			_, err := s.db.CreateUser(ctx, carrier, msisdn, "")
 			if err != nil {
 				logrus.Errorf("Error creating user: %v", err)
 				return nil, err
@@ -721,7 +810,6 @@ func (s *LuckyNumberService) SettleDeposit(msisdn string, amount float64, name, 
 		// Update user balance
 		errs := make(chan error, 5)
 
-		senderID := "Funua Pesa"
 		num := user["balance"].(pgtype.Numeric)
 
 		f, _ := num.Float64Value()
@@ -775,8 +863,7 @@ func (s *LuckyNumberService) SettleDeposit(msisdn string, amount float64, name, 
 				errs <- err
 			}()
 			go func() {
-				_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
-				errs <- err
+				err = s.sendsms(msisdn, message)
 			}()
 			// collect errors
 			for i := 0; i < 5; i++ {
@@ -836,7 +923,7 @@ func (s *LuckyNumberService) SettleDeposit(msisdn string, amount float64, name, 
 				errs <- err
 			}()
 			go func() {
-				_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+				err = s.sendsms(msisdn, message)
 				errs <- err
 			}()
 			// collect errors
@@ -1674,8 +1761,7 @@ func (s *LuckyNumberService) handleJackpotWin(
 	logrus.Infof("Player MSISDN: %s", msisdn)
 	resultd, err := s.ResultDisplay(utils.ToString(selectedNumber), converted, playerFreeBet, reference)
 	// Queue SMS
-	senderID := "Funua Pesa"
-	_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+	err = s.sendsms(msisdn, message)
 	if err != nil {
 		return PlaceBetResultDisplay{}, fmt.Errorf("failed to insert SMS queue: %w", err)
 	}
@@ -1685,8 +1771,10 @@ func (s *LuckyNumberService) handleJackpotWin(
 		if err != nil {
 			return PlaceBetResultDisplay{}, fmt.Errorf("failed to handle win: %w", err)
 		}
+
 		message := s.createJackpotMessage(utils.ToString(selectedNumber), converted, playerFreeBet, reference, withholding, taxDeductedAmount, withholdTax)
-		_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+
+		err = s.sendsms(msisdn, message)
 	}
 
 	var boxes map[string]WinAmount
@@ -1889,8 +1977,8 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		resultd, err := s.ResultDisplay(selectedNumber, winAmounts, playerFreeBet, reference)
 
 		// Queue SMS
-		senderID := "Funua Pesa"
-		_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+		err = s.sendsms(msisdn, message)
+
 		if err != nil {
 			return PlaceBetResultDisplay{}, fmt.Errorf("failed to insert SMS queue: %w", err)
 		}
@@ -1942,8 +2030,7 @@ func (s *LuckyNumberService) handleNormalGame(ctx context.Context, player map[st
 		resultd, err := s.ResultDisplay(selectedNumber, winAmounts, playerFreeBet, reference)
 
 		// Queue SMS
-		senderID := "Funua Pesa"
-		_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+		err = s.sendsms(msisdn, message)
 		if err != nil {
 			return PlaceBetResultDisplay{}, fmt.Errorf("failed to insert SMS queue: %w", err)
 		}
@@ -2502,10 +2589,7 @@ func (s *LuckyNumberService) InsertFailedSMS(ref string) error {
 	}
 
 	message := s.texts["results"]["cancelled"]
-	senderID := "LuckyNumber"
-
-	// Insert into SMS queue and ignore the returned ID
-	_, err = s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+	err = s.sendsms(msisdn, message)
 	if err != nil {
 		return fmt.Errorf("failed to insert failed SMS: %w", err)
 	}
@@ -2531,7 +2615,7 @@ func (s *LuckyNumberService) PlaceBetSpin(
 
 	ctx := context.Background()
 	gameID := "SPIN_" + s.randomString(10)
-	symbols := []string{"A", "B", "C", "D", "E"}
+	symbols := []string{"1", "2", "3", "4", "5"}
 
 	//----------------------------------------------------
 	// LOAD SETTINGS

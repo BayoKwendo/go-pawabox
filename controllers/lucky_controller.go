@@ -114,7 +114,7 @@ func PlaceBetLuckyNumber(c *fiber.Ctx) error {
 		return checkErr
 	})
 	g.Go(func() error {
-		user, userErr = lucky.CheckUser(msisdn)
+		user, userErr = lucky.CheckUser(msisdn, "")
 		return userErr
 	})
 
@@ -355,7 +355,9 @@ func Login(c *fiber.Ctx) error {
 
 	msisdn := utils.ToString(data["msisdn"])
 
-	user, err := lucky.CheckUser(msisdn)
+	name := utils.ToString(data["name"])
+
+	user, err := lucky.CheckUser(msisdn, name)
 	if err != nil {
 		return err
 	}
@@ -391,7 +393,7 @@ func GetUser(c *fiber.Ctx) error {
 	msisdn := userClaims["sub"].(string) // get MSISDN
 	// role := userClaims["role"].(string)  // optional
 	// msisdn := utils.ToString(data["msisdn"])
-	user, err := lucky.CheckUser(msisdn)
+	user, err := lucky.CheckUser(msisdn, "")
 	if err != nil {
 		return err
 	}
@@ -637,7 +639,7 @@ func VerifyOTP(c *fiber.Ctx) error {
 	}
 
 	// Ensure user exists
-	user, err := lucky.CheckUser(msisdn)
+	user, err := lucky.CheckUser(msisdn, "")
 	if err != nil {
 		logrus.Errorf("CheckUser error: %v", err)
 		return c.Status(500).JSON(models.NewErrorResponse(500, 1, "internal server error"))
@@ -716,7 +718,7 @@ func executeConcurrentQueries(ctx context.Context, msisdn string) (interface{}, 
 
 		go func() {
 			defer wg.Done()
-			user, userErr = lucky.CheckUser(msisdn)
+			user, userErr = lucky.CheckUser(msisdn, "")
 			if userErr != nil {
 				logrus.Warnf("CheckUser failed: %v", userErr)
 				user = map[string]interface{}{} // Ensure user is never nil
@@ -843,7 +845,7 @@ func PlaceBetSpin(c *fiber.Ctx) error {
 		return checkErr
 	})
 	g.Go(func() error {
-		user, userErr = lucky.CheckUser(msisdn)
+		user, userErr = lucky.CheckUser(msisdn, "")
 		return userErr
 	})
 

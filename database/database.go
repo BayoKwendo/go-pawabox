@@ -1212,8 +1212,8 @@ func (db *Database) UpdateLuckyBetWin(ctx context.Context, result, game, referen
 }
 
 // CreateUser creates a new user
-func (db *Database) CreateUser(ctx context.Context, carrier, msisdn string) (int64, error) {
-	query := `INSERT INTO "Player" (carrier, msisdn) VALUES ($1, $2)`
+func (db *Database) CreateUser(ctx context.Context, carrier, msisdn string, name string) (int64, error) {
+	query := `INSERT INTO "Player" (carrier, msisdn, name) VALUES ($1, $2)`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1221,7 +1221,7 @@ func (db *Database) CreateUser(ctx context.Context, carrier, msisdn string) (int
 	}
 	defer conn.Release()
 
-	result, err := conn.Exec(ctx, query, carrier, msisdn)
+	result, err := conn.Exec(ctx, query, carrier, msisdn, name)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create user: %w", err)
 	}
