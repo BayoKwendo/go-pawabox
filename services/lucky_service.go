@@ -578,7 +578,7 @@ func (s *LuckyNumberService) sendsms(msisdn string, message string) error {
 		Timeout: 20 * time.Second,
 	}
 
-	req, err := http.NewRequest("POST", "https://paymentapi.strikebet.co.ke/api/v1/insert_sms", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", "http://172.16.0.184:8008/api/v1/insert_sms", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("creating request failed: %w", err)
 	}
