@@ -249,7 +249,7 @@ func main() {
 
 	// Other routes can be handled by Fiber if needed, but for simplicity using net/http
 	server := &http.Server{
-		Addr:    ":3006",
+		Addr:    "0.0.0.0:3006",
 		Handler: mux,
 	}
 
