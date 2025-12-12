@@ -26,4 +26,4 @@ COPY --from=builder /app/config.yml .
 EXPOSE 3006
 
 # Start the app
-CMD ["./main"]
+CMD ["./socket_server"]
