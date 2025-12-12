@@ -515,6 +515,35 @@ func (db *Database) GetWinners(ctx context.Context) ([]map[string]interface{}, e
 
 	return db.scanRowsToMap(rows)
 }
+
+func (db *Database) GetOnlineUsers(ctx context.Context) ([]map[string]interface{}, error) {
+	var query string
+	var args []interface{}
+
+	// No date filter
+	query = `SELECT 
+				COUNT(DISTINCT c.customer_id) AS online_users
+			FROM "CustomerLogs" c
+			INNER JOIN "Player" p 
+				ON c.customer_id = p.id::text
+			WHERE  
+				c.date_created >= NOW() - INTERVAL '1 hour';`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	return db.scanRowsToMap(rows)
+}
+
 func (db *Database) CheckDeposits(ctx context.Context, msisdn string, startDate, endDate *string) ([]map[string]interface{}, error) {
 	var query string
 	var args []interface{}

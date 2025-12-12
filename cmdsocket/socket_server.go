@@ -102,6 +102,38 @@ func main() {
 				"Data":          winner,
 				"StatusMessage": "Success",
 			})
+		})
+
+		// Handle message event
+		socket.On("online_users", func(data ...any) {
+
+			online_users, err := lucky.GetOnlineUsers()
+			if err != nil {
+				socket.Emit("error", map[string]interface{}{
+					"Status":        false,
+					"StatusCode":    1,
+					"StatusMessage": err.Error(),
+				})
+				return
+			}
+
+			if online_users == nil {
+				online_users = []map[string]interface{}{}
+			}
+			var online int
+
+			if len(online_users) == 0 {
+				online = 0
+			} else {
+				online = int(online_users[0]["online_users"].(int64)) // or float64 depending on DB
+			}
+
+			socket.Emit("online_list", map[string]interface{}{
+				"Status":        200,
+				"StatusCode":    0,
+				"UsersOnline":   online,
+				"StatusMessage": "Success",
+			})
 
 		})
 
@@ -157,7 +189,7 @@ func main() {
 			msisdn := claims["sub"].(string)
 			log.Printf("🔌 Disconnected: %s", msisdn)
 
-			user, err := lucky.CheckUser(msisdn)
+			user, err := lucky.CheckUser(msisdn, "")
 			if err != nil {
 				socket.Emit("error", map[string]interface{}{
 					"Status":        false,

@@ -367,6 +367,23 @@ func (s *LuckyNumberService) GetWinners() ([]map[string]interface{}, error) {
 
 	return history, nil
 }
+
+func (s *LuckyNumberService) GetOnlineUsers() ([]map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
+
+	ctx := context.Background()
+
+	// Call DB method with date range
+	onlineusers, err := s.db.GetOnlineUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return onlineusers, nil
+}
 func (s *LuckyNumberService) GetGameHistory(msisdn string, startDate, endDate string) ([]map[string]interface{}, error) {
 	if s == nil || s.db == nil {
 		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
@@ -561,23 +578,19 @@ func (s *LuckyNumberService) sendsms(msisdn string, message string) error {
 	ctx := context.Background()
 	senderID := "LuckyNumber"
 	_, err := s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
-
 	// Create request body JSON
 	payload := map[string]interface{}{
 		"message": message,
 		"msisdn":  msisdn,
 	}
-
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("json marshal error: %w", err)
 	}
-
 	// Prepare HTTPS client
 	client := &http.Client{
 		Timeout: 20 * time.Second,
 	}
-
 	req, err := http.NewRequest("POST", "http://172.16.0.184:8008/api/v1/insert_sms", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("creating request failed: %w", err)
