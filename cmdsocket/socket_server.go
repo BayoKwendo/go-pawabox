@@ -245,8 +245,21 @@ func main() {
 	})
 
 	// Socket.IO handler
-	mux.Handle("/socket.io/", io.ServeHandler(nil))
+	mux.Handle("/socket.io/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Add CORS headers
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
+		// Respond to preflight requests
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Call the actual Socket.IO handler
+		io.ServeHandler(nil).ServeHTTP(w, r)
+	}))
 	// Other routes can be handled by Fiber if needed, but for simplicity using net/http
 	server := &http.Server{
 		Addr:    "0.0.0.0:3006",
