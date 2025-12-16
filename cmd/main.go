@@ -115,7 +115,6 @@ func main() {
 	}
 	// Seeded rand for sampling; atomic ensures safe concurrent access on counter
 	rand.Seed(time.Now().UnixNano())
-
 	app.Use(func(c *fiber.Ctx) error {
 		start := time.Now()
 		atomic.AddUint64(&requestCount, 1)
@@ -124,7 +123,6 @@ func main() {
 
 		duration := time.Since(start)
 		current := atomic.LoadUint64(&requestCount)
-
 		// log either slow requests or probabilistically sample
 		if duration > 500*time.Millisecond || (int(current)%sampleRate == 0) {
 			// keep log fields minimal to reduce allocation
