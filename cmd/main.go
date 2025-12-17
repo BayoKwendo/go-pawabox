@@ -92,6 +92,9 @@ func main() {
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
 		MaxAge:       600,
 	}))
+	app.Options("/*", func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusNoContent)
+	})
 
 	// ---------- Middlewares ----------
 	// Recover without stack trace in production
