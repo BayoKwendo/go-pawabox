@@ -172,10 +172,10 @@ func (s *LuckyNumberService) CheckGameONE(gameCatID interface{}) (map[string]int
 
 	return s.db.CheckGameONE(ctx, catIDStr)
 }
-func (s *LuckyNumberService) CheckGame() (interface{}, error) {
+func (s *LuckyNumberService) CheckGame(category string) (interface{}, error) {
 	ctx := context.Background()
 
-	return s.db.CheckGames(ctx)
+	return s.db.CheckGames(ctx, category)
 }
 
 // VerifyOTP verifies an OTP and returns remaining seconds until expiry (ExpireIn).

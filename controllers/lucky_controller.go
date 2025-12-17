@@ -314,10 +314,13 @@ func GetGames(c *fiber.Ctx) error {
 	// logrus.Infof("GetGames request: %+v", data)
 
 	categories := []string{"all", "Money Prize", "Car Prize", "Bike Prize", "JackPot"}
+
+	category := c.Query("category", "all") // default = "all"
+
 	userVal := c.Locals("user")
 	if userVal == nil {
 
-		game, err := lucky.CheckGame()
+		game, err := lucky.CheckGame(category)
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{
 				"Status":  false,
@@ -351,7 +354,7 @@ func GetGames(c *fiber.Ctx) error {
 		defer cancel()
 
 		// Execute concurrent queries
-		gameResult, userResult, err := executeConcurrentQueries(ctx, msisdn)
+		gameResult, userResult, err := executeConcurrentQueries(ctx, category, msisdn)
 		if err != nil {
 			return handleQueryError(err)
 		}
@@ -724,7 +727,7 @@ func VerifyOTP(c *fiber.Ctx) error {
 }
 
 // executeConcurrentQueries runs game and user queries concurrently with proper timeout
-func executeConcurrentQueries(ctx context.Context, msisdn string) (interface{}, map[string]interface{}, error) {
+func executeConcurrentQueries(ctx context.Context, category string, msisdn string) (interface{}, map[string]interface{}, error) {
 	type result struct {
 		game interface{}
 		user map[string]interface{}
@@ -744,7 +747,7 @@ func executeConcurrentQueries(ctx context.Context, msisdn string) (interface{}, 
 
 		go func() {
 			defer wg.Done()
-			game, gameErr = lucky.CheckGame()
+			game, gameErr = lucky.CheckGame(category)
 			if gameErr != nil {
 				logrus.Warnf("CheckGame failed: %v", gameErr)
 				game = []interface{}{} // Ensure game is never nil

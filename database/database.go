@@ -930,11 +930,18 @@ func (db *Database) UpdateKPIDeposit(ctx context.Context, mvalue float64) (int64
 }
 
 // CheckGames gets active USSD games
-func (db *Database) CheckGames(ctx context.Context) ([]map[string]interface{}, error) {
-	query := `SELECT id, name, title, category, name_init, description, bet_amount, boxes 
-             FROM "Games" 
-             WHERE status = 'active' 
-             ORDER BY CASE id 
+func (db *Database) CheckGames(ctx context.Context, category string) ([]map[string]interface{}, error) {
+	baseQuery := `SELECT id, name, title, category, name_init, description, bet_amount, boxes
+                  FROM "Games"
+                  WHERE status = 'active'`
+
+	var args []interface{}
+	if category != "" && category != "all" {
+		baseQuery += " AND category = $1"
+		args = append(args, category)
+	}
+
+	baseQuery += ` ORDER BY CASE id 
                  WHEN 17 THEN 1
                  WHEN 10 THEN 2
                  WHEN 16 THEN 3 
@@ -947,13 +954,14 @@ func (db *Database) CheckGames(ctx context.Context) ([]map[string]interface{}, e
                  WHEN 15 THEN 10
                  ELSE 11
              END`
+
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire connection: %w", err)
 	}
 	defer conn.Release()
 
-	rows, err := conn.Query(ctx, query)
+	rows, err := conn.Query(ctx, baseQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
