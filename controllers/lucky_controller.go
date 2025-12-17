@@ -313,37 +313,69 @@ func SettleWithdrawalB2BLuckyNumber(c *fiber.Ctx) error {
 func GetGames(c *fiber.Ctx) error {
 	// logrus.Infof("GetGames request: %+v", data)
 
-	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	categories := []string{"all", "Money Prize", "Car Prize", "Bike Prize", "JackPot"}
+	userVal := c.Locals("user")
+	if userVal == nil {
 
-	// Create context with timeout for all operations
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+		game, err := lucky.CheckGame()
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"Status":  false,
+				"Message": "failed to fetch history",
+			})
+		}
 
-	// Execute concurrent queries
-	gameResult, userResult, err := executeConcurrentQueries(ctx, msisdn)
-	if err != nil {
-		return handleQueryError(err)
+		// Ensure history is never nil
+		if game == nil {
+			game = []map[string]interface{}{}
+		}
+		title := "SHINDA HADI KES 3M CASH PAPO HAPO!"
+
+		return c.Status(200).JSON(models.H{
+			"Status":        200,
+			"StatusCode":    0,
+			"Title":         title,
+			"Data":          game,
+			"FreeBet":       false,
+			"Categories":    categories,
+			"StatusMessage": "success",
+		})
+	} else {
+		// guest user
+		userClaims := userVal.(jwt.MapClaims)
+
+		msisdn := userClaims["sub"].(string) // get MSISDN
+
+		// Create context with timeout for all operations
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// Execute concurrent queries
+		gameResult, userResult, err := executeConcurrentQueries(ctx, msisdn)
+		if err != nil {
+			return handleQueryError(err)
+		}
+
+		// Process user data for freebet logic
+		freebet, addTitle := processFreebetLogic(userResult)
+
+		// Insert logs asynchronously (fire and forget)
+		title := "SHINDA HADI KES 3M CASH PAPO HAPO!" + addTitle
+
+		logrus.Infof("Game data: %+v", gameResult)
+		logrus.Infof("User data: %+v", userResult)
+
+		return c.Status(200).JSON(models.H{
+			"Status":        200,
+			"StatusCode":    0,
+			"Title":         title,
+			"Data":          gameResult,
+			"FreeBet":       freebet,
+			"Categories":    categories,
+			"StatusMessage": "success",
+		})
 	}
 
-	// Process user data for freebet logic
-	freebet, addTitle := processFreebetLogic(userResult)
-
-	// Insert logs asynchronously (fire and forget)
-
-	title := "SHINDA HADI KES 3M CASH PAPO HAPO!" + addTitle
-
-	logrus.Infof("Game data: %+v", gameResult)
-	logrus.Infof("User data: %+v", userResult)
-
-	return c.Status(200).JSON(models.H{
-		"Status":        200,
-		"StatusCode":    0,
-		"Title":         title,
-		"Data":          gameResult,
-		"FreeBet":       freebet,
-		"StatusMessage": "success",
-	})
 }
 
 // GetGames - POST /lucky_games

@@ -297,6 +297,55 @@ func JWTMiddleware() fiber.Handler {
 	}
 }
 
+// option jwt
+func OptionalJWTMiddleware() fiber.Handler {
+	secret := JWT_SECRET
+
+	return func(c *fiber.Ctx) error {
+		authHeader := c.Get("x-access-token")
+		if authHeader == "" {
+			return c.Next()
+		}
+
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"Status":        false,
+				"StatusCode":    1,
+				"StatusMessage": "invalid Authorization header format",
+			})
+		}
+
+		tokenString := parts[1]
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			// ensure token method is HMAC
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(secret), nil
+		})
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"Status":        false,
+				"StatusCode":    1,
+				"StatusMessage": "invalid token",
+			})
+		}
+
+		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+			c.Locals("user", claims) // store claims for handlers
+			return c.Next()
+		}
+
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"Status":        false,
+			"StatusCode":    1,
+			"StatusMessage": "invalid or expired token",
+		})
+	}
+}
+
 // ToSQLFloat converts to float64 suitable for SQL (handles NaN, Inf)
 func ToSQLFloat(value interface{}) interface{} {
 	f := ToFloat64(value)

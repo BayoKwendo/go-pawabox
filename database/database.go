@@ -931,7 +931,7 @@ func (db *Database) UpdateKPIDeposit(ctx context.Context, mvalue float64) (int64
 
 // CheckGames gets active USSD games
 func (db *Database) CheckGames(ctx context.Context) ([]map[string]interface{}, error) {
-	query := `SELECT id, name, title, name_init, description, bet_amount, boxes 
+	query := `SELECT id, name, title, category, name_init, description, bet_amount, boxes 
              FROM "Games" 
              WHERE status = 'active' 
              ORDER BY CASE id 

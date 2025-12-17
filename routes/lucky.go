@@ -22,7 +22,7 @@ func RegisterRoutes(app *fiber.App) {
 
 	api.Post("/settle_withdrawal", controllers.SettleWithdrawalLuckyNumber)
 	api.Post("/settle_withdrawal_b2b", controllers.SettleWithdrawalB2BLuckyNumber)
-	api.Get("/lucky_games", utils.JWTMiddleware(), controllers.GetGames)
+	api.Get("/lucky_games", utils.OptionalJWTMiddleware(), controllers.GetGames)
 	api.Post("/login", controllers.Login)
 
 	api.Get("/user", utils.JWTMiddleware(), controllers.GetUser)
