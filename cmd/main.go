@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	cors "github.com/gofiber/fiber/v2/middleware/cors"
+
 	"fiberapp/config"
 	"fiberapp/controllers"
 	"fiberapp/database"
@@ -18,7 +20,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
-	fibercors "github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/sirupsen/logrus"
 )
@@ -97,15 +98,6 @@ func main() {
 		Level: compress.LevelDefault,
 	}))
 
-	// Lean CORS
-	app.Use(fibercors.New(fibercors.Config{
-		AllowOrigins:     "*",
-		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders:     "Content-Type, Authorization",
-		AllowCredentials: false,
-		MaxAge:           600, // increase preflight cache to 10 minutes
-	}))
-
 	// Light-weight request sampling logger - sampleRateEnv or default 100 (1%)
 	sampleRate := 100 // sample 1 in 100
 	if s := os.Getenv("LOG_SAMPLE_RATE"); s != "" {
@@ -156,7 +148,12 @@ func main() {
 			"timestamp": time.Now().Unix(),
 		})
 	})
-
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: "*",
+		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
+		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
+		MaxAge:       600,
+	}))
 	// ---------- Start server ----------
 	port := os.Getenv("PORT")
 	if port == "" {
