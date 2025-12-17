@@ -10,8 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	cors "github.com/gofiber/fiber/v2/middleware/cors"
-
 	"fiberapp/config"
 	"fiberapp/controllers"
 	"fiberapp/database"
@@ -20,6 +18,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/compress"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/sirupsen/logrus"
 )
@@ -87,6 +86,13 @@ func main() {
 		Prefork:               prefork,
 	})
 
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: "*",
+		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
+		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
+		MaxAge:       600,
+	}))
+
 	// ---------- Middlewares ----------
 	// Recover without stack trace in production
 	app.Use(recover.New(recover.Config{
@@ -148,12 +154,6 @@ func main() {
 			"timestamp": time.Now().Unix(),
 		})
 	})
-	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*",
-		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
-		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
-		MaxAge:       600,
-	}))
 	// ---------- Start server ----------
 	port := os.Getenv("PORT")
 	if port == "" {
