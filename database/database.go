@@ -245,7 +245,7 @@ func (db *Database) scanRowsToMap(rows pgx.Rows) ([]map[string]interface{}, erro
 
 // CheckUserAttempted checks if user exists in Attempted_Players table
 func (db *Database) CheckUserAttempted(ctx context.Context, msisdn string) (map[string]interface{}, error) {
-	query := `SELECT * FROM "Attempted_Players" WHERE msisdn = $1 `
+	query := `SELECT * FROM "Attempted_Players" WHERE new_msisdn = $1 `
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -321,6 +321,56 @@ func (db *Database) UpdateUserInfo(ctx context.Context, msisdn, name string) (in
 	return result.RowsAffected(), nil
 }
 
+func (db *Database) UpdateUserMsisdn(ctx context.Context, msisdn, newmsisdn string) (int64, error) {
+	query := `UPDATE "Player" 
+              SET msisdn = $1
+              WHERE msisdn = $2`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	result, err := conn.Exec(ctx, query, newmsisdn, msisdn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update user %s: %w", msisdn, err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
+func (db *Database) UpdateUserWinStatus(ctx context.Context, msisdn, show_win string) (int64, error) {
+	query := `UPDATE "Player" 
+              SET show_win = $1
+              WHERE msisdn = $2`
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+	result, err := conn.Exec(ctx, query, show_win, msisdn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update user %s: %w", msisdn, err)
+	}
+	return result.RowsAffected(), nil
+}
+
+func (db *Database) DeleteUserInfo(ctx context.Context, msisdn string) (int64, error) {
+	query := `UPDATE "Player" 
+              SET active_status = 'inactive'
+              WHERE msisdn = $1`
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+	result, err := conn.Exec(ctx, query, msisdn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update user %s: %w", msisdn, err)
+	}
+	return result.RowsAffected(), nil
+}
 func (db *Database) CheckDepositRequestLucky(ctx context.Context, reference string) (map[string]interface{}, error) {
 	query := `SELECT * FROM "deposit_requests" 
               WHERE reference = $1 
@@ -1267,8 +1317,8 @@ func (db *Database) CreateUser(ctx context.Context, carrier, msisdn string, name
 }
 
 // CreateUserAttempted creates a new attempted user
-func (db *Database) CreateUserAttempted(ctx context.Context, carrier, msisdn string) (int64, error) {
-	query := `INSERT INTO "Attempted_Players" (carrier, msisdn) VALUES ($1, $2) 
+func (db *Database) CreateUserAttempted(ctx context.Context, msisdn string, new_msisdn string) (int64, error) {
+	query := `INSERT INTO "Attempted_Players" ( msisdn, new_msisdn) VALUES ($1,$2) 
 	ON CONFLICT DO NOTHING`
 
 	conn, err := db.pool.Acquire(ctx)
@@ -1277,7 +1327,7 @@ func (db *Database) CreateUserAttempted(ctx context.Context, carrier, msisdn str
 	}
 	defer conn.Release()
 
-	result, err := conn.Exec(ctx, query, carrier, msisdn)
+	result, err := conn.Exec(ctx, query, msisdn, new_msisdn)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create attempted user: %w", err)
 	}

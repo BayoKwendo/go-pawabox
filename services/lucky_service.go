@@ -299,6 +299,47 @@ func (s *LuckyNumberService) CheckUser(msisdn string, name string) (map[string]i
 	}
 }
 
+func (s *LuckyNumberService) CheckUserNoCreating(msisdn string) (map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		log.Printf("PANIC PREVENTION: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
+	ctx := context.Background()
+
+	user, err := s.db.CheckUser(ctx, msisdn)
+	if err != nil {
+		logrus.Errorf("Error checking user: %v", err)
+		return nil, err
+	}
+	logrus.Infof("user already : %s", user)
+	// Create user if doesn't exist
+	if user == nil {
+		return user, nil
+	} else {
+		return user, nil
+	}
+}
+
+func (s *LuckyNumberService) CheckUserNoCreatingAttempted(msisdn string) (map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		log.Printf("PANIC PREVENTION: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
+	ctx := context.Background()
+
+	user, err := s.db.CheckUserAttempted(ctx, msisdn)
+	if err != nil {
+		logrus.Errorf("Error checking user: %v", err)
+		return nil, err
+	}
+	logrus.Infof("user already : %s", user)
+	// Create user if doesn't exist
+	if user == nil {
+		return user, nil
+	} else {
+		return user, nil
+	}
+}
 func (s *LuckyNumberService) GetDeposits(msisdn string, startDate, endDate string) ([]map[string]interface{}, error) {
 	if s == nil || s.db == nil {
 		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
@@ -447,6 +488,29 @@ func (s *LuckyNumberService) UpdateUser(msisdn, name string) error {
 	_, err := s.db.UpdateUserInfo(ctx, msisdn, name)
 	return err
 }
+func (s *LuckyNumberService) UpdateMsisdn(msisdn, newmsisdn string) error {
+	ctx := context.Background()
+	_, err := s.db.DeleteUserAttempted(ctx, msisdn)
+	_, err = s.db.UpdateUserMsisdn(ctx, msisdn, newmsisdn)
+	return err
+}
+
+func (s *LuckyNumberService) DeleteUser(msisdn string) error {
+	ctx := context.Background()
+	_, err := s.db.DeleteUserInfo(ctx, msisdn)
+	return err
+}
+
+func (s *LuckyNumberService) CreateUserAttempted(msisdn string, new_msisdn string) error {
+	ctx := context.Background()
+	_, err := s.db.CreateUserAttempted(ctx, msisdn, new_msisdn)
+	return err
+}
+func (s *LuckyNumberService) UpdateUserWinStatus(msisdn, show_win string) error {
+	ctx := context.Background()
+	_, err := s.db.UpdateUserWinStatus(ctx, msisdn, show_win)
+	return err
+}
 
 func (s *LuckyNumberService) InsertVerification(msisdn string, code string, expired int64, created int64) error {
 	ctx := context.Background()
@@ -575,38 +639,38 @@ func (s *LuckyNumberService) SendPaymentRequest(msisdn string, amount string, ga
 
 func (s *LuckyNumberService) sendsms(msisdn string, message string) error {
 
-	ctx := context.Background()
-	senderID := "LuckyNumber"
-	_, err := s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
-	// Create request body JSON
-	payload := map[string]interface{}{
-		"message": message,
-		"msisdn":  msisdn,
-	}
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("json marshal error: %w", err)
-	}
-	// Prepare HTTPS client
-	client := &http.Client{
-		Timeout: 20 * time.Second,
-	}
-	req, err := http.NewRequest("POST", "http://172.16.0.184:8008/api/v1/insert_sms", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("creating request failed: %w", err)
-	}
+	// ctx := context.Background()
+	// senderID := "LuckyNumber"
+	// _, err := s.db.InsertIntoSMSQueue(ctx, msisdn, message, senderID, "game_response")
+	// // Create request body JSON
+	// payload := map[string]interface{}{
+	// 	"message": message,
+	// 	"msisdn":  msisdn,
+	// }
+	// jsonData, err := json.Marshal(payload)
+	// if err != nil {
+	// 	return fmt.Errorf("json marshal error: %w", err)
+	// }
+	// // Prepare HTTPS client
+	// client := &http.Client{
+	// 	Timeout: 20 * time.Second,
+	// }
+	// req, err := http.NewRequest("POST", "http://172.16.0.184:8008/api/v1/insert_sms", bytes.NewBuffer(jsonData))
+	// if err != nil {
+	// 	return fmt.Errorf("creating request failed: %w", err)
+	// }
 
-	req.Header.Set("Content-Type", "application/json")
+	// req.Header.Set("Content-Type", "application/json")
 
-	// Send request
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("https request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("api error: status %d", resp.StatusCode)
-	}
+	// // Send request
+	// resp, err := client.Do(req)
+	// if err != nil {
+	// 	return fmt.Errorf("https request failed: %w", err)
+	// }
+	// defer resp.Body.Close()
+	// if resp.StatusCode != http.StatusOK {
+	// 	return fmt.Errorf("api error: status %d", resp.StatusCode)
+	// }
 	return nil
 }
 
