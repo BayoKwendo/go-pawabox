@@ -795,23 +795,28 @@ func UpdateUserProfilePic(c *fiber.Ctx) error {
 		filePath := path.Join(uploadDir, filename)
 
 		if err := c.SaveFile(file, filePath); err != nil {
+			logrus.Errorf("File uploaded: %v", err)
 			return c.Status(500).JSON(models.NewErrorResponse(500, 1, "failed to save file"))
 		}
 
 		// Optionally store file path in DB
 		logrus.Infof("File uploaded: %s", filePath)
+		// Update win status
+		if err := lucky.UpdateUserProfilePic(msisdn, filename); err != nil {
+			return err
+		}
+		return c.Status(200).JSON(models.H{
+			"Status":        200,
+			"StatusCode":    0,
+			"StatusMessage": "Success",
+		})
+
+	} else {
+		logrus.Errorf("File uploaded: %v", err)
+
+		return c.Status(500).JSON(models.NewErrorResponse(500, 1, "please attach file to upload"))
 	}
 
-	// Update win status
-	// if err := lucky.UpdateUserWinStatus(msisdn); err != nil {
-	// 	return err
-	// }
-
-	return c.Status(200).JSON(models.H{
-		"Status":        200,
-		"StatusCode":    0,
-		"StatusMessage": "Success",
-	})
 }
 
 func VerifyOTP(c *fiber.Ctx) error {

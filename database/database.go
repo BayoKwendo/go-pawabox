@@ -89,7 +89,7 @@ func loadConfig(path string) (*Config, error) {
 // Build DSN
 func dsnFromConfig(cfg *Config) string {
 
-	log.Println("Raw YAML content:\n%s", cfg)
+	// log.Println("Raw YAML content:\n%s", cfg)
 	conn := cfg.Production.Postgres.Connection
 
 	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable&pool_max_conns=50&pool_min_conns=5",
@@ -350,6 +350,22 @@ func (db *Database) UpdateUserWinStatus(ctx context.Context, msisdn, show_win st
 	}
 	defer conn.Release()
 	result, err := conn.Exec(ctx, query, show_win, msisdn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update user %s: %w", msisdn, err)
+	}
+	return result.RowsAffected(), nil
+}
+
+func (db *Database) UpdateUserProfilePic(ctx context.Context, msisdn, filename string) (int64, error) {
+	query := `UPDATE "Player" 
+              SET profile_url = $1
+              WHERE msisdn = $2`
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+	result, err := conn.Exec(ctx, query, filename, msisdn)
 	if err != nil {
 		return 0, fmt.Errorf("failed to update user %s: %w", msisdn, err)
 	}
@@ -981,7 +997,7 @@ func (db *Database) UpdateKPIDeposit(ctx context.Context, mvalue float64) (int64
 
 // CheckGames gets active USSD games
 func (db *Database) CheckGames(ctx context.Context, category string) ([]map[string]interface{}, error) {
-	baseQuery := `SELECT id, name, title, category, name_init, description, bet_amount, boxes
+	baseQuery := `SELECT id, name, title, category, name_init, description, bet_amount, boxes, max_win
                   FROM "Games"
                   WHERE status = 'active'`
 
@@ -992,8 +1008,8 @@ func (db *Database) CheckGames(ctx context.Context, category string) ([]map[stri
 	}
 
 	baseQuery += ` ORDER BY CASE id 
-                 WHEN 17 THEN 1
-                 WHEN 10 THEN 2
+                 WHEN 10 THEN 1
+                 WHEN 17 THEN 2
                  WHEN 16 THEN 3 
                  WHEN 8 THEN 4
                  WHEN 9 THEN 5

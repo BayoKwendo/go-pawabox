@@ -512,6 +512,11 @@ func (s *LuckyNumberService) UpdateUserWinStatus(msisdn, show_win string) error 
 	return err
 }
 
+func (s *LuckyNumberService) UpdateUserProfilePic(msisdn, filename string) error {
+	ctx := context.Background()
+	_, err := s.db.UpdateUserProfilePic(ctx, msisdn, filename)
+	return err
+}
 func (s *LuckyNumberService) InsertVerification(msisdn string, code string, expired int64, created int64) error {
 	ctx := context.Background()
 
