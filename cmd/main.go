@@ -87,7 +87,9 @@ func main() {
 		Prefork:               prefork,
 	})
 
-	app.Static("/profile_uploads", "../profile_uploads")
+	cwd, _ := os.Getwd()
+
+	app.Static("/profile_uploads", filepath.Join(cwd, "profile_uploads"))
 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
@@ -161,9 +163,6 @@ func main() {
 			"timestamp": time.Now().Unix(),
 		})
 	})
-	cwd, _ := os.Getwd()
-
-	app.Static("/profile_uploads", filepath.Join(cwd, "profile_uploads"))
 
 	// ---------- Start server ----------
 	port := os.Getenv("PORT")
