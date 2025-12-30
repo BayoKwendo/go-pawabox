@@ -86,12 +86,15 @@ func main() {
 		Prefork:               prefork,
 	})
 
+	app.Static("/profile_uploads", "./profile_uploads")
+
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization, X-Access-Token",
 		MaxAge:       600,
 	}))
+
 	app.Options("/*", func(c *fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
@@ -177,8 +180,6 @@ func main() {
 		}
 		close(listenErr)
 	}()
-
-	app.Static("/profile_uploads", "./profile_uploads")
 
 	// Wait for signal or server error
 	select {
