@@ -86,7 +86,7 @@ func main() {
 		Prefork:               prefork,
 	})
 
-	app.Static("/profile_uploads", "./profile_uploads")
+	app.Static("/profile_uploads", "../profile_uploads")
 
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
