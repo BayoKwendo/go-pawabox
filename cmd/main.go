@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
-	"path"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync/atomic"
@@ -161,11 +161,9 @@ func main() {
 			"timestamp": time.Now().Unix(),
 		})
 	})
+	cwd, _ := os.Getwd()
 
-	app.Get("/image/:name", func(c *fiber.Ctx) error {
-		filename := path.Base(c.Params("name")) // prevent ../../ attacks
-		return c.SendFile("../profile_uploads/" + filename)
-	})
+	app.Static("/profile_uploads", filepath.Join(cwd, "profile_uploads"))
 
 	// ---------- Start server ----------
 	port := os.Getenv("PORT")
