@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"log"
 	"math/rand"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -87,10 +89,6 @@ func main() {
 		Prefork:               prefork,
 	})
 
-	cwd, _ := os.Getwd()
-
-	app.Static("/profile_uploads", filepath.Join(cwd, "profile_uploads"))
-
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
@@ -162,6 +160,25 @@ func main() {
 			"service":   "Lucky Number Game API",
 			"timestamp": time.Now().Unix(),
 		})
+	})
+
+	// Resolve absolute path to uploads folder
+	cwd, _ := os.Getwd()
+	uploadDir := filepath.Join(cwd, "../profile_uploads")
+	log.Println("Serving images from:", uploadDir)
+
+	app.Get("/image/:name", func(c *fiber.Ctx) error {
+		filename := path.Base(c.Params("name")) // prevent ../../ attacks
+		fullPath := filepath.Join(uploadDir, filename)
+
+		// Check if file exists
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error": "File not found",
+			})
+		}
+
+		return c.SendFile(fullPath)
 	})
 
 	// ---------- Start server ----------
