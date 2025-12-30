@@ -178,6 +178,8 @@ func main() {
 		close(listenErr)
 	}()
 
+	app.Static("/profile_uploads", "./profile_uploads")
+
 	// Wait for signal or server error
 	select {
 	case <-ctx.Done():
