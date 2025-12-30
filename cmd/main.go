@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"path"
 	"runtime"
 	"strconv"
 	"sync/atomic"
@@ -160,6 +161,12 @@ func main() {
 			"timestamp": time.Now().Unix(),
 		})
 	})
+
+	app.Get("/image/:name", func(c *fiber.Ctx) error {
+		filename := path.Base(c.Params("name")) // prevent ../../ attacks
+		return c.SendFile("../profile_uploads/" + filename)
+	})
+
 	// ---------- Start server ----------
 	port := os.Getenv("PORT")
 	if port == "" {
