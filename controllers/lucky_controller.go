@@ -421,6 +421,14 @@ func Login(c *fiber.Ctx) error {
 		code = "1111"
 	}
 
+	if msisdn == "254785128132" {
+		code = "1111"
+	}
+
+	if msisdn == "254720841355" {
+		code = "1111"
+	}
+
 	if msisdn == "254714383269" {
 		code = "1111"
 	}
@@ -695,6 +703,22 @@ func UpdateUser(c *fiber.Ctx) error {
 			}
 
 			if msisdn_new == "254717029580" {
+				code = "1111"
+			}
+
+			if msisdn == "254720841355" {
+				code = "1111"
+			}
+
+			if msisdn_new == "254720841355" {
+				code = "1111"
+			}
+
+			if msisdn == "254785128132" {
+				code = "1111"
+			}
+
+			if msisdn_new == "254785128132" {
 				code = "1111"
 			}
 
