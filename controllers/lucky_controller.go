@@ -416,6 +416,17 @@ func Login(c *fiber.Ctx) error {
 	if msisdn == "254717029580" {
 		code = "1111"
 	}
+
+	if msisdn == "254718468634" {
+		code = "1111"
+	}
+
+	if msisdn == "254714383269" {
+		code = "1111"
+	}
+	if msisdn == "254703639349" {
+		code = "1111"
+	}
 	err = lucky.InsertVerification(msisdn, code, expired, created)
 	if err != nil {
 		return err
@@ -692,6 +703,28 @@ func UpdateUser(c *fiber.Ctx) error {
 			}
 
 			if msisdn == "254717029580" {
+				code = "1111"
+			}
+
+			if msisdn == "254718468634" {
+				code = "1111"
+			}
+
+			if msisdn == "254714383269" {
+				code = "1111"
+			}
+			if msisdn == "254703639349" {
+				code = "1111"
+			}
+
+			if msisdn_new == "254718468634" {
+				code = "1111"
+			}
+
+			if msisdn_new == "254714383269" {
+				code = "1111"
+			}
+			if msisdn_new == "254703639349" {
 				code = "1111"
 			}
 			err = lucky.InsertVerification(msisdn_new, code, expired, created)
