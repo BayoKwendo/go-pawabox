@@ -163,10 +163,13 @@ func main() {
 	})
 
 	// Resolve absolute path to uploads folder
-	cwd, _ := os.Getwd()
-	uploadDir := filepath.Join(cwd, "../profile_uploads")
+	// cwd, _ := os.Getwd()
+	uploadDir := "./profile_uploads"
+	if _, err := os.Stat(uploadDir); os.IsNotExist(err) {
+		_ = os.Mkdir(uploadDir, 0755)
+	}
 	log.Println("Serving images from:", uploadDir)
-
+	
 	app.Get("/image/:name", func(c *fiber.Ctx) error {
 		filename := path.Base(c.Params("name")) // prevent ../../ attacks
 		fullPath := filepath.Join(uploadDir, filename)

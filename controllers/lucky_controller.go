@@ -847,7 +847,6 @@ func UpdateUserProfilePic(c *fiber.Ctx) error {
 		if _, err := os.Stat(uploadDir); os.IsNotExist(err) {
 			_ = os.Mkdir(uploadDir, 0755)
 		}
-
 		filename := fmt.Sprintf("%s_%d_%s", msisdn, time.Now().Unix(), file.Filename)
 		filePath := path.Join(uploadDir, filename)
 
@@ -855,7 +854,6 @@ func UpdateUserProfilePic(c *fiber.Ctx) error {
 			logrus.Errorf("File uploaded: %v", err)
 			return c.Status(500).JSON(models.NewErrorResponse(500, 1, "failed to save file"))
 		}
-
 		// Optionally store file path in DB
 		logrus.Infof("File uploaded: %s", filePath)
 		// Update win status
