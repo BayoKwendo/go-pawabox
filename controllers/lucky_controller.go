@@ -116,7 +116,7 @@ func PlaceBetLuckyNumber(c *fiber.Ctx) error {
 		return checkErr
 	})
 	g.Go(func() error {
-		user, userErr = lucky.CheckUser(msisdn, "")
+		user, userErr = lucky.CheckUser(msisdn, "", "")
 		return userErr
 	})
 
@@ -386,56 +386,250 @@ func GetGames(c *fiber.Ctx) error {
 // GetGames - POST /lucky_games
 func Login(c *fiber.Ctx) error {
 	var data map[string]interface{}
+
+	if err := c.BodyParser(&data); err != nil {
+		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
+	}
+	msisdn := utils.ToString(data["msisdn"])
+
+	if msisdn != "" && len(msisdn) > 0 {
+
+		name := utils.ToString(data["name"])
+		promocode := utils.ToString(data["promocode"])
+		val := rand.Intn(9000) + 1000
+
+		created := time.Now().Unix()
+		expired := created + 2*60 // expire after 2 minutes
+
+		code := strconv.Itoa(val)
+
+		if msisdn == "254717629732" {
+			code = "2222"
+		}
+
+		if msisdn == "254717029580" {
+			code = "1111"
+		}
+
+		if msisdn == "254718468634" {
+			code = "1111"
+		}
+
+		if msisdn == "254785128132" {
+			code = "1111"
+		}
+
+		if msisdn == "254720841355" {
+			code = "1111"
+		}
+
+		if msisdn == "254714383269" {
+			code = "1111"
+		}
+		if msisdn == "254703639349" {
+			code = "1111"
+		}
+
+		if promocode != "" && len(promocode) > 0 {
+
+			promo, err := lucky.CheckPromoCode(promocode)
+
+			logrus.Info(promo)
+
+			if err != nil {
+				return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Invalid PromoCode"))
+			}
+			if promo == nil {
+				return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Invalid PromoCode"))
+			}
+
+			user, err := lucky.CheckUser(msisdn, name, promocode)
+			if err != nil {
+				return err
+			}
+			if user == nil {
+				return err
+			}
+			err = lucky.InsertVerification(msisdn, code, expired, created)
+			if err != nil {
+				return err
+			}
+
+			return c.Status(200).JSON(models.H{
+				"Status":        200,
+				"StatusCode":    0,
+				"Units":         "Minutes",
+				"ExpireIn":      2,
+				"StatusMessage": "Otp Verification has been sent!",
+			})
+
+		} else {
+			user, err := lucky.CheckUser(msisdn, name, "")
+			if err != nil {
+				return err
+			}
+			if user == nil {
+				return err
+			}
+			if utils.ToString(user["active_status"]) == "inactive" {
+				return c.Status(202).JSON(models.NewErrorResponse(202, 1, "user account not found"))
+			}
+
+			if utils.ToString(user["self_exclusion"]) == "YES" {
+				return c.Status(202).JSON(models.NewErrorResponse(202, 1, "user account is inactive"))
+			}
+
+			err = lucky.InsertVerification(msisdn, code, expired, created)
+			if err != nil {
+				return err
+			}
+
+			return c.Status(200).JSON(models.H{
+				"Status":        200,
+				"StatusCode":    0,
+				"Units":         "Minutes",
+				"ExpireIn":      2,
+				"StatusMessage": "Otp Verification has been sent!",
+			})
+		}
+	} else {
+		return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Invalid Phone Number"))
+	}
+}
+
+// GetGames - POST /lucky_games
+func ApplyPromo(c *fiber.Ctx) error {
+	var data map[string]interface{}
+
+	if err := c.BodyParser(&data); err != nil {
+		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
+	}
+	promocode := utils.ToString(data["promocode"])
+
+	if promocode != "" && len(promocode) > 0 {
+
+		promo, err := lucky.CheckPromoCode(promocode)
+
+		logrus.Info(promo)
+
+		if err != nil {
+			return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Invalid PromoCode"))
+		}
+		if promo == nil {
+			return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Invalid PromoCode"))
+		}
+
+		return c.Status(200).JSON(models.H{
+			"Status":        200,
+			"StatusCode":    0,
+			"StatusMessage": "Success",
+		})
+
+	} else {
+		return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Please Enter PromoCode to Apply"))
+
+	}
+}
+
+func RequestSelfExlusion(c *fiber.Ctx) error {
+	var data map[string]interface{}
+
+	userClaims := c.Locals("user").(jwt.MapClaims)
+	msisdn := userClaims["sub"].(string) // get MSISDN
+	if err := c.BodyParser(&data); err != nil {
+		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
+	}
+	self_exclusion_period := utils.ToString(data["self_exclusion_period"])
+
+	if self_exclusion_period != "" && len(self_exclusion_period) > 0 {
+
+		var hrs = 24
+		if self_exclusion_period == "24 Hours" {
+			hrs = 24
+		}
+
+		if self_exclusion_period == "7 Days" {
+			hrs = 168
+		}
+
+		if self_exclusion_period == "30 Days" {
+			hrs = 720
+		}
+
+		if self_exclusion_period == "1 Year" {
+			hrs = 8784
+		}
+
+		_, err := lucky.RequestSelfExlusion(msisdn, hrs)
+
+		// logrus.Info(promo)
+		if err != nil {
+			return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Invalid PromoCode"))
+		}
+		// if promo == nil {
+		// 	return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Invalid PromoCode"))
+		// }
+
+		val := rand.Intn(9000) + 1000
+
+		created := time.Now().Unix()
+		expired := created + 2*60 // expire after 2 minutes
+
+		code := strconv.Itoa(val)
+
+		if msisdn == "254717629732" {
+			code = "2222"
+		}
+		err = lucky.InsertVerification(msisdn, code, expired, created)
+		if err != nil {
+			return err
+		}
+		return c.Status(200).JSON(models.H{
+			"Status":        200,
+			"StatusCode":    0,
+			"StatusMessage": "Success",
+		})
+
+	} else {
+		return c.Status(202).JSON(models.NewErrorResponse(202, 1, "invalid JSON"))
+
+	}
+}
+
+func VerySelfExlusion(c *fiber.Ctx) error {
+	var data map[string]interface{}
+
 	if err := c.BodyParser(&data); err != nil {
 		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
 	}
 
-	msisdn := utils.ToString(data["msisdn"])
-
-	name := utils.ToString(data["name"])
-
-	user, err := lucky.CheckUser(msisdn, name)
+	userClaims := c.Locals("user").(jwt.MapClaims)
+	msisdn := userClaims["sub"].(string) // get MSISDN
+	opt := utils.ToString(data["otp"])
+	// Call service to verify OTP — returns remaining seconds until expiry
+	verifyRemain, err := lucky.VerifyOTP(msisdn, opt)
 	if err != nil {
-		return err
-	}
-	if user == nil {
-		return err
-	}
-
-	val := rand.Intn(9000) + 1000
-
-	created := time.Now().Unix()
-	expired := created + 2*60 // expire after 2 minutes
-
-	code := strconv.Itoa(val)
-
-	if msisdn == "254717629732" {
-		code = "2222"
+		// Distinguish invalid vs expired for better messages if you want
+		// Here we follow your earlier style: return 201 with message for invalid/expired
+		// but it's more idiomatic to return 4xx
+		logrus.Warnf("VerifyOTP error for %s: %v", msisdn, err)
+		return c.Status(201).JSON(models.H{
+			"Status":        false,
+			"StatusCode":    2,
+			"StatusMessage": err.Error(),
+		})
 	}
 
-	if msisdn == "254717029580" {
-		code = "1111"
+	self, err := lucky.CheckSelfExclusion(msisdn)
+	if self == nil {
+		return c.Status(201).JSON(models.H{
+			"Status":        false,
+			"StatusCode":    2,
+			"StatusMessage": err.Error(),
+		})
 	}
 
-	if msisdn == "254718468634" {
-		code = "1111"
-	}
-
-	if msisdn == "254785128132" {
-		code = "1111"
-	}
-
-	if msisdn == "254720841355" {
-		code = "1111"
-	}
-
-	if msisdn == "254714383269" {
-		code = "1111"
-	}
-	if msisdn == "254703639349" {
-		code = "1111"
-	}
-	err = lucky.InsertVerification(msisdn, code, expired, created)
+	err = lucky.UpdatePlayerSelf(msisdn, utils.ToString(self["value_hrs"]))
 	if err != nil {
 		return err
 	}
@@ -443,12 +637,12 @@ func Login(c *fiber.Ctx) error {
 	return c.Status(200).JSON(models.H{
 		"Status":        200,
 		"StatusCode":    0,
-		"Units":         "Minutes",
-		"ExpireIn":      2,
-		"StatusMessage": "Otp Verification has been sent!",
+		"ExpireIn":      verifyRemain,
+		"Units":         "Seconds", // client-friendly TTL
+		"StatusMessage": "Success",
 	})
-}
 
+}
 func GetUser(c *fiber.Ctx) error {
 
 	// Get the JWT claims set by middleware
@@ -456,7 +650,7 @@ func GetUser(c *fiber.Ctx) error {
 	msisdn := userClaims["sub"].(string) // get MSISDN
 	// role := userClaims["role"].(string)  // optional
 	// msisdn := utils.ToString(data["msisdn"])
-	user, err := lucky.CheckUser(msisdn, "")
+	user, err := lucky.CheckUser(msisdn, "", "")
 	if err != nil {
 		return err
 	}
@@ -590,8 +784,10 @@ func GetHistoryHandler(c *fiber.Ctx) error {
 
 func GetGameHistoryHandler(c *fiber.Ctx) error {
 	var data struct {
-		StartDate string `json:"StartDate"`
-		EndDate   string `json:"EndDate"`
+		StartDate  string `json:"StartDate"`
+		EndDate    string `json:"EndDate"`
+		PageSize   any    `json:"PageSize"`
+		PageNumber any    `json:"PageNumber"`
 	}
 
 	// Get the JWT claims set by middleware
@@ -604,9 +800,27 @@ func GetGameHistoryHandler(c *fiber.Ctx) error {
 	startDate := data.StartDate // string from JSON
 	endDate := data.EndDate     // string from JSON
 
+	page_number := data.PageNumber
+	page_size := data.PageSize
+
 	logrus.Infof("GetGames request: %+v", startDate)
 
-	history, err := lucky.GetGameHistory(msisdn, startDate, endDate)
+	page_number = "1"
+	page_size = "100"
+	page, ok := page_number.(string)
+
+	if !ok {
+		return nil
+	}
+
+	if page_number != "" && len(page) > 0 {
+		page_number = page_number
+		page_size = page
+	}
+
+	offset := (utils.ToInt(page_number) - 1) * utils.ToInt(page_size)
+
+	history, err := lucky.GetGameHistory(msisdn, utils.ToString(offset), utils.ToString(page_number), startDate, endDate)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"Status":  false,
@@ -626,28 +840,16 @@ func GetGameHistoryHandler(c *fiber.Ctx) error {
 		"History":       history,
 	})
 }
+func GetYear(c *fiber.Ctx) error {
+	year := time.Now().Year()
 
-// func GetHistory(c *fiber.Ctx) error {
-
-//		// Get the JWT claims set by middleware
-//		userClaims := c.Locals("user").(jwt.MapClaims)
-//		msisdn := userClaims["sub"].(string) // get MSISDN
-//		// role := userClaims["role"].(string)  // optional
-//		// msisdn := utils.ToString(data["msisdn"])
-//		user, err := lucky.GetHistory(msisdn)
-//		if err != nil {
-//			return err
-//		}
-//		if user == nil {
-//			return err
-//		}
-//		return c.Status(200).JSON(models.H{
-//			"Status":        200,
-//			"StatusCode":    0,
-//			"Data":          user,
-//			"StatusMessage": "Success",
-//		})
-//	}
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"Status":        200,
+		"StatusCode":    0,
+		"Year":          year,
+		"StatusMessage": "Success",
+	})
+}
 
 func UpdateUser(c *fiber.Ctx) error {
 	// Get the JWT claims set by middleware
@@ -660,122 +862,122 @@ func UpdateUser(c *fiber.Ctx) error {
 
 	name := utils.ToString(data["name"])
 
-	msisdn_new := utils.ToString(data["msisdn"])
+	// msisdn_new := utils.ToString(data["msisdn"])
 
 	// check if msisdnNew is provided
-	if msisdn_new != "" && len(msisdn_new) > 0 {
+	// if msisdn_new != "" && len(msisdn_new) > 0 {
 
-		user, err := lucky.CheckUserNoCreating(msisdn_new)
-		if err != nil {
-			return err
-		}
+	// 	user, err := lucky.CheckUserNoCreating(msisdn_new)
+	// 	if err != nil {
+	// 		return err
+	// 	}
 
-		// if phone already exists
-		if user != nil {
-			return c.Status(200).JSON(models.H{
-				"Status":        202,
-				"StatusCode":    1,
-				"StatusMessage": "Phone Number Already Registered",
-			})
-		} else {
+	// 	// if phone already exists
+	// 	if user != nil {
+	// 		return c.Status(200).JSON(models.H{
+	// 			"Status":        202,
+	// 			"StatusCode":    1,
+	// 			"StatusMessage": "Phone Number Already Registered",
+	// 		})
+	// 	} else {
 
-			// msisdn_t := utils.ToString(user["msisdn"])
+	// 		// msisdn_t := utils.ToString(user["msisdn"])
 
-			attempteduser, err := lucky.CheckUserNoCreatingAttempted(msisdn_new)
-			if err != nil {
-				return err
-			}
-			if attempteduser == nil {
-				err := lucky.CreateUserAttempted(msisdn, msisdn_new)
-				if err != nil {
-					return err
-				}
-			}
-			val := rand.Intn(9000) + 1000
+	// 		attempteduser, err := lucky.CheckUserNoCreatingAttempted(msisdn_new)
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 		if attempteduser == nil {
+	// 			err := lucky.CreateUserAttempted(msisdn, msisdn_new)
+	// 			if err != nil {
+	// 				return err
+	// 			}
+	// 		}
+	// 		val := rand.Intn(9000) + 1000
 
-			created := time.Now().Unix()
-			expired := created + 2*60 // expire after 2 minutes
+	// 		created := time.Now().Unix()
+	// 		expired := created + 2*60 // expire after 2 minutes
 
-			code := strconv.Itoa(val)
+	// 		code := strconv.Itoa(val)
 
-			if msisdn == "254717629732" {
-				code = "2222"
-			}
+	// 		if msisdn == "254717629732" {
+	// 			code = "2222"
+	// 		}
 
-			if msisdn_new == "254717029580" {
-				code = "1111"
-			}
+	// 		if msisdn_new == "254717029580" {
+	// 			code = "1111"
+	// 		}
 
-			if msisdn == "254720841355" {
-				code = "1111"
-			}
+	// 		if msisdn == "254720841355" {
+	// 			code = "1111"
+	// 		}
 
-			if msisdn_new == "254720841355" {
-				code = "1111"
-			}
+	// 		if msisdn_new == "254720841355" {
+	// 			code = "1111"
+	// 		}
 
-			if msisdn == "254785128132" {
-				code = "1111"
-			}
+	// 		if msisdn == "254785128132" {
+	// 			code = "1111"
+	// 		}
 
-			if msisdn_new == "254785128132" {
-				code = "1111"
-			}
+	// 		if msisdn_new == "254785128132" {
+	// 			code = "1111"
+	// 		}
 
-			if msisdn_new == "254717629732" {
-				code = "2222"
-			}
+	// 		if msisdn_new == "254717629732" {
+	// 			code = "2222"
+	// 		}
 
-			if msisdn == "254717029580" {
-				code = "1111"
-			}
+	// 		if msisdn == "254717029580" {
+	// 			code = "1111"
+	// 		}
 
-			if msisdn == "254718468634" {
-				code = "1111"
-			}
+	// 		if msisdn == "254718468634" {
+	// 			code = "1111"
+	// 		}
 
-			if msisdn == "254714383269" {
-				code = "1111"
-			}
-			if msisdn == "254703639349" {
-				code = "1111"
-			}
+	// 		if msisdn == "254714383269" {
+	// 			code = "1111"
+	// 		}
+	// 		if msisdn == "254703639349" {
+	// 			code = "1111"
+	// 		}
 
-			if msisdn_new == "254718468634" {
-				code = "1111"
-			}
+	// 		if msisdn_new == "254718468634" {
+	// 			code = "1111"
+	// 		}
 
-			if msisdn_new == "254714383269" {
-				code = "1111"
-			}
-			if msisdn_new == "254703639349" {
-				code = "1111"
-			}
-			err = lucky.InsertVerification(msisdn_new, code, expired, created)
-			if err != nil {
-				return err
-			}
+	// 		if msisdn_new == "254714383269" {
+	// 			code = "1111"
+	// 		}
+	// 		if msisdn_new == "254703639349" {
+	// 			code = "1111"
+	// 		}
+	// 		err = lucky.InsertVerification(msisdn_new, code, expired, created)
+	// 		if err != nil {
+	// 			return err
+	// 		}
 
-			return c.Status(200).JSON(models.H{
-				"Status":        200,
-				"StatusCode":    0,
-				"Units":         "Minutes",
-				"ExpireIn":      2,
-				"StatusMessage": "Otp Verification has been sent!",
-			})
-		}
-	} else {
-		err := lucky.UpdateUser(msisdn, name)
-		if err != nil {
-			return err
-		}
-
-		return c.Status(200).JSON(models.H{
-			"Status":        200,
-			"StatusCode":    0,
-			"StatusMessage": "Success",
-		})
+	// 		return c.Status(200).JSON(models.H{
+	// 			"Status":        200,
+	// 			"StatusCode":    0,
+	// 			"Units":         "Minutes",
+	// 			"ExpireIn":      2,
+	// 			"StatusMessage": "Otp Verification has been sent!",
+	// 		})
+	// 	}
+	// } else {
+	err := lucky.UpdateUser(msisdn, name)
+	if err != nil {
+		return err
 	}
+
+	return c.Status(200).JSON(models.H{
+		"Status":        200,
+		"StatusCode":    0,
+		"StatusMessage": "Success",
+	})
+	// }
 }
 
 func DeleteUser(c *fiber.Ctx) error {
@@ -912,7 +1114,7 @@ func VerifyOTP(c *fiber.Ctx) error {
 	}
 
 	// Ensure user exists
-	user, err := lucky.CheckUser(msisdn, "")
+	user, err := lucky.CheckUser(msisdn, "", "")
 	if err != nil {
 		logrus.Errorf("CheckUser error: %v", err)
 		return c.Status(500).JSON(models.NewErrorResponse(500, 1, "internal server error"))
@@ -995,7 +1197,7 @@ func executeConcurrentQueries(ctx context.Context, category string, msisdn strin
 
 		go func() {
 			defer wg.Done()
-			user, userErr = lucky.CheckUser(msisdn, "")
+			user, userErr = lucky.CheckUser(msisdn, "", "")
 			if userErr != nil {
 				logrus.Warnf("CheckUser failed: %v", userErr)
 				user = map[string]interface{}{} // Ensure user is never nil
@@ -1122,7 +1324,7 @@ func PlaceBetSpin(c *fiber.Ctx) error {
 		return checkErr
 	})
 	g.Go(func() error {
-		user, userErr = lucky.CheckUser(msisdn, "")
+		user, userErr = lucky.CheckUser(msisdn, "", "")
 		return userErr
 	})
 

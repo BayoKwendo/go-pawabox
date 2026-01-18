@@ -44,6 +44,14 @@ func RegisterRoutes(app *fiber.App) {
 	api.Post("/list_deposit", utils.JWTMiddleware(), controllers.GetDepositHandler)
 
 	api.Post("/register", controllers.Login)
+
+	api.Post("/apply_promo", controllers.ApplyPromo)
+
+	api.Get("/get_year", controllers.GetYear)
+
+	api.Post("/request_self_exclusion", utils.JWTMiddleware(), controllers.RequestSelfExlusion)
+	api.Post("/verify_self_exclusion", utils.JWTMiddleware(), controllers.VerySelfExlusion)
+
 	api.Post("/verify_otp", controllers.VerifyOTP)
 
 	// metrics route omitted per your instruction (no Prometheus)

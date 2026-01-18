@@ -198,7 +198,7 @@ func (s *LuckyNumberService) VerifyOTP(msisdn, otp string) (int64, error) {
 	if checked == nil {
 		// invalid otp
 		logrus.Warnf("Invalid OTP for msisdn=%s", msisdn)
-		return 0, fmt.Errorf("invalid otp")
+		return 0, fmt.Errorf("Wrong Code")
 	}
 
 	// Step 2 — Verify expiry (expired > now)
@@ -265,7 +265,7 @@ func (s *LuckyNumberService) VerifyOTP(msisdn, otp string) (int64, error) {
 	return remain, nil
 }
 
-func (s *LuckyNumberService) CheckUser(msisdn string, name string) (map[string]interface{}, error) {
+func (s *LuckyNumberService) CheckUser(msisdn string, name string, promocode string) (map[string]interface{}, error) {
 	if s == nil || s.db == nil {
 		log.Printf("PANIC PREVENTION: s=%p, s.db=%p", s, s.db)
 		return nil, fmt.Errorf("service or database not initialized")
@@ -282,9 +282,16 @@ func (s *LuckyNumberService) CheckUser(msisdn string, name string) (map[string]i
 	// Create user if doesn't exist
 	if user == nil {
 		carrier := s.getMNOCategory(msisdn)
-		_, err := s.db.CreateUser(ctx, carrier, msisdn, name)
+		promo := s.randomString(5)
+
+		_, err := s.db.CreateUser(ctx, carrier, msisdn, name, promo, promocode)
 		if err != nil {
 			logrus.Errorf("Error creating user: %v", err)
+			return nil, err
+		}
+		_, errd := s.db.CreatePromo(ctx, msisdn, promo)
+		if errd != nil {
+			logrus.Errorf("Error creating promo: %v", err)
 			return nil, err
 		}
 		// Get the newly created user
@@ -340,6 +347,58 @@ func (s *LuckyNumberService) CheckUserNoCreatingAttempted(msisdn string) (map[st
 		return user, nil
 	}
 }
+
+func (s *LuckyNumberService) CheckSelfExclusion(msisdn string) (map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		log.Printf("PANIC PREVENTION: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
+	ctx := context.Background()
+
+	self, err := s.db.CheckSelfExclusion(ctx, msisdn)
+	if err != nil {
+		logrus.Errorf("Error checking user: %v", err)
+		return nil, err
+	}
+	logrus.Infof("self already : %s", self)
+	// Create user if doesn't exist
+	if self == nil {
+		return self, nil
+	} else {
+		return self, nil
+	}
+}
+func (s *LuckyNumberService) CheckPromoCode(promocode string) (map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		log.Printf("PANIC PREVENTION: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
+	ctx := context.Background()
+	promo, err := s.db.CheckPromoCode(ctx, promocode)
+	if err != nil {
+		logrus.Errorf("Error checking promo: %v", err)
+		return nil, err
+	}
+	logrus.Infof("promo already : %s", promo)
+	// Create user if doesn't exist
+	return promo, nil
+}
+
+func (s *LuckyNumberService) RequestSelfExlusion(msisdn string, hrs int) (map[string]interface{}, error) {
+	if s == nil || s.db == nil {
+		log.Printf("PANIC PREVENTION: s=%p, s.db=%p", s, s.db)
+		return nil, fmt.Errorf("service or database not initialized")
+	}
+	ctx := context.Background()
+	_, err := s.db.RequestSelfExlusion(ctx, msisdn, hrs)
+	if err != nil {
+		logrus.Errorf("Error checking promo: %v", err)
+		return nil, err
+	}
+	// Create user if doesn't exist
+	return nil, err
+}
+
 func (s *LuckyNumberService) GetDeposits(msisdn string, startDate, endDate string) ([]map[string]interface{}, error) {
 	if s == nil || s.db == nil {
 		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
@@ -425,7 +484,7 @@ func (s *LuckyNumberService) GetOnlineUsers() ([]map[string]interface{}, error) 
 
 	return onlineusers, nil
 }
-func (s *LuckyNumberService) GetGameHistory(msisdn string, startDate, endDate string) ([]map[string]interface{}, error) {
+func (s *LuckyNumberService) GetGameHistory(msisdn string, offset string, page_size string, startDate, endDate string) ([]map[string]interface{}, error) {
 	if s == nil || s.db == nil {
 		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
 		return nil, fmt.Errorf("service or database not initialized")
@@ -442,7 +501,7 @@ func (s *LuckyNumberService) GetGameHistory(msisdn string, startDate, endDate st
 		endPtr = &endDate
 	}
 	// Call DB method with date range
-	history, err := s.db.CheckGameHistory(ctx, msisdn, startPtr, endPtr)
+	history, err := s.db.CheckGameHistory(ctx, msisdn, startPtr, endPtr, offset, page_size)
 	if err != nil {
 		logrus.Errorf("Error checking history for msisdn %s: %v", msisdn, err)
 		return nil, err
@@ -495,6 +554,12 @@ func (s *LuckyNumberService) UpdateMsisdn(msisdn, newmsisdn string) error {
 	return err
 }
 
+func (s *LuckyNumberService) UpdatePlayerSelf(msisdn string, hrs string) error {
+	ctx := context.Background()
+	err := s.db.UpdateSelfExclusion(ctx, msisdn)
+	err = s.db.UpdatePlayerSelf(ctx, msisdn, hrs)
+	return err
+}
 func (s *LuckyNumberService) DeleteUser(msisdn string) error {
 	ctx := context.Background()
 	_, err := s.db.DeleteUserInfo(ctx, msisdn)
@@ -548,8 +613,15 @@ func (s *LuckyNumberService) IniatatDeposit(msisdn string, amount float64, chann
 	mnoCategory := s.getMNOCategory(msisdn)
 	// 2) Create user if missing (do this synchronously)
 	if user == nil {
-		if _, err := s.db.CreateUser(ctx, mnoCategory, msisdn, ""); err != nil {
+		promo := s.randomString(5)
+
+		if _, err := s.db.CreateUser(ctx, mnoCategory, msisdn, "", promo, ""); err != nil {
 			logrus.Errorf("CreateUser error: %v", err)
+			return PlaceBetResult{}, err
+		}
+		_, errd := s.db.CreatePromo(ctx, msisdn, promo)
+		if errd != nil {
+			logrus.Errorf("Error creating promo: %v", err)
 			return PlaceBetResult{}, err
 		}
 		// optionally re-fetch user if you need returned fields
@@ -796,8 +868,15 @@ func (s *LuckyNumberService) HandleDepositAndGame(data map[string]interface{}) e
 		// Create user if doesn't exist
 		if user == nil {
 			mnoCategory := s.getMNOCategory(msisdn)
-			_, err = s.db.CreateUser(ctx, mnoCategory, msisdn, "")
+			promo := s.randomString(5)
+
+			_, err = s.db.CreateUser(ctx, mnoCategory, msisdn, "", promo, "")
 			if err != nil {
+				return err
+			}
+			_, errd := s.db.CreatePromo(ctx, msisdn, promo)
+			if errd != nil {
+				logrus.Errorf("Error creating promo: %v", err)
 				return err
 			}
 			user, err = s.db.CheckUser(ctx, msisdn)
@@ -872,11 +951,14 @@ func (s *LuckyNumberService) SettleDeposit(msisdn string, amount float64, name, 
 		// Create user if doesn't exist
 		if user == nil {
 			carrier := s.getMNOCategory(msisdn)
-			_, err := s.db.CreateUser(ctx, carrier, msisdn, "")
+			promo := s.randomString(5)
+
+			_, err := s.db.CreateUser(ctx, carrier, msisdn, "", promo, "")
 			if err != nil {
 				logrus.Errorf("Error creating user: %v", err)
 				return nil, err
 			}
+
 			// Get the newly created user
 			user, err = s.db.CheckUser(ctx, msisdn)
 			if err != nil {

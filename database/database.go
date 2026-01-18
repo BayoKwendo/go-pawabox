@@ -262,6 +262,44 @@ func (db *Database) CheckUserAttempted(ctx context.Context, msisdn string) (map[
 	return db.scanRowsToSingleMap(rows)
 }
 
+func (db *Database) CheckSelfExclusion(ctx context.Context, msisdn string) (map[string]interface{}, error) {
+	query := `SELECT * FROM self_exlusion_request WHERE msisdn = $1  AND status = 'pending' order by id DESC LIMIT 1`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, query, msisdn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	return db.scanRowsToSingleMap(rows)
+}
+func (db *Database) CheckPromoCode(ctx context.Context, promo string) (map[string]interface{}, error) {
+
+	query := `SELECT * FROM "promocode" WHERE promocode = $1 AND expire = 'NO'`
+
+	logrus.Infof("promo already : %s", promo)
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	rows, err := conn.Query(ctx, query, promo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	return db.scanRowsToSingleMap(rows)
+}
+
 func (db *Database) CheckTransaction(ctx context.Context, transactionID string) (map[string]interface{}, error) {
 
 	query := `SELECT * FROM "deposit_requests" WHERE transaction_id = $1 `
@@ -338,6 +376,46 @@ func (db *Database) UpdateUserMsisdn(ctx context.Context, msisdn, newmsisdn stri
 	}
 
 	return result.RowsAffected(), nil
+}
+
+func (db *Database) UpdatePlayerSelf(ctx context.Context, msisdn string, hrs string) error {
+	query := `UPDATE "Player"
+						SET
+							self_exclusion = 'YES',
+							self_exclusion_expiry = NOW() + ($1 * INTERVAL '1 hour')
+						WHERE msisdn = $2;`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection: %w", err)
+	}
+
+	defer conn.Release()
+	_, err = conn.Exec(ctx, query, hrs, msisdn)
+	if err != nil {
+		return fmt.Errorf("failed to update user %s: %w", msisdn, err)
+	}
+
+	return nil
+}
+
+func (db *Database) UpdateSelfExclusion(ctx context.Context, msisdn string) error {
+	query := `UPDATE self_exlusion_request 
+              SET status = 'processed'
+              WHERE msisdn = $1 AND status = 'pending'`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	_, err = conn.Exec(ctx, query, msisdn)
+	if err != nil {
+		return fmt.Errorf("failed to update user %s: %w", msisdn, err)
+	}
+
+	return nil
 }
 
 func (db *Database) UpdateUserWinStatus(ctx context.Context, msisdn, show_win string) (int64, error) {
@@ -473,7 +551,7 @@ func (db *Database) CheckHistory(ctx context.Context, msisdn string, startDate, 
 }
 
 // bet History
-func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDate, endDate *string) ([]map[string]interface{}, error) {
+func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDate, endDate *string, offset string, page_size string) ([]map[string]interface{}, error) {
 	var query string
 	var args []interface{}
 
@@ -488,8 +566,8 @@ func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDa
 					INNER JOIN "Player" p ON c.customer_id = p.id::text  
 					WHERE p.msisdn = $1 
 					AND c.date_created BETWEEN $2 AND $3
-					ORDER BY c.id DESC LIMIT 100`
-		args = append(args, *startDate, *endDate) // $2, $3
+					ORDER BY c.id DESC LIMIT $5 OFFSET $4;`
+		args = append(args, *startDate, *endDate, offset, page_size) // $2, $3
 	} else {
 		// No date filter
 		query = `SELECT 
@@ -499,7 +577,9 @@ func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDa
 				INNER JOIN "Player" p ON c.customer_id = p.id::text  
 				WHERE p.msisdn = $1 
 				ORDER BY c.id DESC 
-				LIMIT 10;`
+				LIMIT $2 OFFSET $3;`
+		args = append(args, offset, page_size) // $2, $3
+
 	}
 
 	conn, err := db.pool.Acquire(ctx)
@@ -1267,6 +1347,28 @@ func (db *Database) InsertVerification(ctx context.Context, msisdn, code string,
 	return resultExec.RowsAffected(), nil
 }
 
+// RequestSelfExlusion inserts a new verification code
+func (db *Database) RequestSelfExlusion(ctx context.Context, msisdn string, hrs int) (int64, error) {
+	query := `
+		INSERT INTO self_exlusion_request 
+		(msisdn, value_hrs)
+		VALUES ($1, $2)
+	`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	resultExec, err := conn.Exec(ctx, query, msisdn, hrs)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert self_exlusion_request code: %w", err)
+	}
+
+	return resultExec.RowsAffected(), nil
+}
+
 // UpdateLuckyBet updates bet result
 func (db *Database) UpdateLuckyBet(ctx context.Context, result, game, reference, betStatus string) (int64, error) {
 	query := `UPDATE "Bets" 
@@ -1315,8 +1417,8 @@ func (db *Database) UpdateLuckyBetWin(ctx context.Context, result, game, referen
 }
 
 // CreateUser creates a new user
-func (db *Database) CreateUser(ctx context.Context, carrier, msisdn string, name string) (int64, error) {
-	query := `INSERT INTO "Player" (carrier, msisdn, name) VALUES ($1, $2, $3)`
+func (db *Database) CreateUser(ctx context.Context, carrier, msisdn string, name string, my_promocode string, promocode string) (int64, error) {
+	query := `INSERT INTO "Player" (carrier, msisdn, name, promocode, my_promocode) VALUES ($1, $2, $3, $4, $5)`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1324,9 +1426,26 @@ func (db *Database) CreateUser(ctx context.Context, carrier, msisdn string, name
 	}
 	defer conn.Release()
 
-	result, err := conn.Exec(ctx, query, carrier, msisdn, name)
+	result, err := conn.Exec(ctx, query, carrier, msisdn, name, promocode, my_promocode)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	return result.RowsAffected(), nil
+}
+
+func (db *Database) CreatePromo(ctx context.Context, msisdn string, promocode string) (int64, error) {
+	query := `INSERT INTO "promocode" (promocode, msisdn) VALUES ($1, $2)`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	result, err := conn.Exec(ctx, query, promocode, msisdn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to promocode user: %w", err)
 	}
 
 	return result.RowsAffected(), nil
