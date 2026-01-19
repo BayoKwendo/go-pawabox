@@ -2779,7 +2779,7 @@ func (s *LuckyNumberService) PlaceBetSpin(
 
 	ctx := context.Background()
 	gameID := "SPIN_" + s.randomString(10)
-	symbols := []string{"1", "2", "3", "4", "5"}
+	symbols := []string{"0", "1", "2", "3"}
 
 	//----------------------------------------------------
 	// LOAD SETTINGS
