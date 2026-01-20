@@ -384,6 +384,23 @@ func GetGames(c *fiber.Ctx) error {
 }
 
 // GetGames - POST /lucky_games
+func GetBetAmount(c *fiber.Ctx) error {
+	// logrus.Infof("GetGames request: %+v", data)
+	// guest user
+
+	bets := []string{"20", "30", "40", "50", "100"}
+
+	return c.Status(200).JSON(models.H{
+		"Status":        200,
+		"StatusCode":    0,
+		"BetAmount":     bets,
+		"BetType":       "JackPot",
+		"StatusMessage": "success",
+	})
+
+}
+
+// GetGames - POST /lucky_games
 func Login(c *fiber.Ctx) error {
 	var data map[string]interface{}
 
