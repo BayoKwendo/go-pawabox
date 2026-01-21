@@ -3103,7 +3103,7 @@ func (s *LuckyNumberService) PlaceBetSpin(
 		}
 
 		logrus.Infof("[FORCE-WIN COMPLETE] Forced win=%.2f, symbolIndex=%d, adjustable_rtp=%.2f, target_rtp=%.2f, basket=%.2f",
-			forcedAmount, symbolIndex, adjustRTP, rtpLimit, basketValue)
+			currentRTPDay, symbolIndex, adjustRTP, rtpLimit, forcedAmount)
 
 		// If RTP too high → try smaller payouts
 		if currentRTPDay > rtpLimit {
@@ -3136,7 +3136,7 @@ func (s *LuckyNumberService) PlaceBetSpin(
 		amount := forcedAmount
 
 		logrus.Infof("[FORCE-WIN COMPLETE] Forced win=%.2f, adjustable_rtp=%.2f, target_rtp=%.2f, basket=%.2f",
-			amount, kpiPay, rtpLimit, basketValue)
+			amount, kpiPay, rtpLimit, amount)
 
 		if basketValue > amount {
 			tax, net := calcTax(amount)

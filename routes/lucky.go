@@ -51,8 +51,8 @@ func RegisterRoutes(app *fiber.App) {
 
 	api.Get("/spin_bet_type", utils.JWTMiddleware(), controllers.GetBetAmount)
 
-	api.Post("/request_self_exclusion", utils.JWTMiddleware(), controllers.RequestSelfExlusion)
-	api.Post("/verify_self_exclusion", utils.JWTMiddleware(), controllers.VerySelfExlusion)
+	api.Post("/request_self_exclusion_period", utils.JWTMiddleware(), controllers.RequestSelfExlusion)
+	api.Post("/verify_self_exclusion_period", utils.JWTMiddleware(), controllers.VerySelfExlusion)
 
 	api.Post("/verify_otp", controllers.VerifyOTP)
 
