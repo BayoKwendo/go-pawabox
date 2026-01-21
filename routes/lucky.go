@@ -31,6 +31,8 @@ func RegisterRoutes(app *fiber.App) {
 
 	api.Put("/user", utils.JWTMiddleware(), controllers.UpdateUser)
 
+	api.Post("/request_delete_user", utils.JWTMiddleware(), controllers.RequestAccountDeletion)
+
 	api.Post("/delete_user", utils.JWTMiddleware(), controllers.DeleteUser)
 
 	api.Post("/update_show_win", utils.JWTMiddleware(), controllers.UpdateUserWinStatus)

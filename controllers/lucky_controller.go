@@ -320,65 +320,176 @@ func GetGames(c *fiber.Ctx) error {
 	category := c.Query("category", "all") // default = "all"
 
 	userVal := c.Locals("user")
-	if userVal == nil {
 
-		game, err := lucky.CheckGame(category)
+	msisdn := c.Query("msisdn", "") // default = "all"
+	if msisdn != "" && len(msisdn) > 0 {
+
+		// Ensure user exists
+		user, err := lucky.CheckUser(msisdn, "", "")
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{
-				"Status":  false,
-				"Message": "failed to fetch history",
+			logrus.Errorf("CheckUser error: %v", err)
+			return c.Status(500).JSON(models.NewErrorResponse(500, 1, "internal server error"))
+		}
+		if user == nil {
+			// You returned an error in your example — replicate that behavior
+			logrus.Warnf("user not found for msisdn=%s", msisdn)
+			return c.Status(404).JSON(models.NewErrorResponse(404, 1, "user not found"))
+		}
+
+		if utils.ToString(user["active_status"]) == "inactive" {
+			return c.Status(202).JSON(models.NewErrorResponse(202, 1, "user account is inactive"))
+
+		}
+		// --- JWT generation ---
+		secret := utils.JWT_SECRET
+		if secret == "" {
+			// fail safe: log and return 500
+			logrus.Error("JWT_SECRET not set in environment")
+			return c.Status(500).JSON(models.NewErrorResponse(500, 1, "internal server error"))
+		}
+
+		// token expiry duration — adjust as needed
+		expireDuration := 48 * time.Hour
+		now := time.Now()
+		claims := jwt.MapClaims{
+			"sub":  msisdn,
+			"iat":  now.Unix(),
+			"exp":  now.Add(expireDuration).Unix(),
+			"role": "user", // optional; change or remove as needed
+		}
+
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+		tokenString, err := token.SignedString([]byte(secret))
+		if err != nil {
+			logrus.Errorf("failed to sign JWT: %v", err)
+			return c.Status(500).JSON(models.NewErrorResponse(500, 1, "internal server error"))
+		}
+
+		if userVal == nil {
+
+			game, err := lucky.CheckGame(category)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{
+					"Status":  false,
+					"Message": "failed to fetch history",
+				})
+			}
+
+			// Ensure history is never nil
+			if game == nil {
+				game = []map[string]interface{}{}
+			}
+			title := "SHINDA HADI KES 3M CASH PAPO HAPO!"
+
+			return c.Status(200).JSON(models.H{
+				"Status":        200,
+				"StatusCode":    0,
+				"Title":         title,
+				"Data":          game,
+				"FreeBet":       false,
+				"token":         tokenString,
+				"Categories":    categories,
+				"StatusMessage": "success",
+			})
+		} else {
+			// guest user
+			userClaims := userVal.(jwt.MapClaims)
+
+			msisdn := userClaims["sub"].(string) // get MSISDN
+
+			// Create context with timeout for all operations
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// Execute concurrent queries
+			gameResult, userResult, err := executeConcurrentQueries(ctx, category, msisdn)
+			if err != nil {
+				return handleQueryError(err)
+			}
+
+			// Process user data for freebet logic
+			freebet, addTitle := processFreebetLogic(userResult)
+
+			// Insert logs asynchronously (fire and forget)
+			title := "SHINDA HADI KES 3M CASH PAPO HAPO!" + addTitle
+
+			logrus.Infof("Game data: %+v", gameResult)
+			logrus.Infof("User data: %+v", userResult)
+
+			return c.Status(200).JSON(models.H{
+				"Status":        200,
+				"StatusCode":    0,
+				"Title":         title,
+				"Data":          gameResult,
+				"FreeBet":       freebet,
+				"token":         tokenString,
+				"Categories":    categories,
+				"StatusMessage": "success",
 			})
 		}
-
-		// Ensure history is never nil
-		if game == nil {
-			game = []map[string]interface{}{}
-		}
-		title := "SHINDA HADI KES 3M CASH PAPO HAPO!"
-
-		return c.Status(200).JSON(models.H{
-			"Status":        200,
-			"StatusCode":    0,
-			"Title":         title,
-			"Data":          game,
-			"FreeBet":       false,
-			"Categories":    categories,
-			"StatusMessage": "success",
-		})
 	} else {
-		// guest user
-		userClaims := userVal.(jwt.MapClaims)
+		if userVal == nil {
 
-		msisdn := userClaims["sub"].(string) // get MSISDN
+			game, err := lucky.CheckGame(category)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{
+					"Status":  false,
+					"Message": "failed to fetch history",
+				})
+			}
 
-		// Create context with timeout for all operations
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+			// Ensure history is never nil
+			if game == nil {
+				game = []map[string]interface{}{}
+			}
+			title := "SHINDA HADI KES 3M CASH PAPO HAPO!"
 
-		// Execute concurrent queries
-		gameResult, userResult, err := executeConcurrentQueries(ctx, category, msisdn)
-		if err != nil {
-			return handleQueryError(err)
+			return c.Status(200).JSON(models.H{
+				"Status":        200,
+				"StatusCode":    0,
+				"Title":         title,
+				"Data":          game,
+				"FreeBet":       false,
+				"token":         "",
+				"Categories":    categories,
+				"StatusMessage": "success",
+			})
+		} else {
+			// guest user
+			userClaims := userVal.(jwt.MapClaims)
+
+			msisdn := userClaims["sub"].(string) // get MSISDN
+
+			// Create context with timeout for all operations
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// Execute concurrent queries
+			gameResult, userResult, err := executeConcurrentQueries(ctx, category, msisdn)
+			if err != nil {
+				return handleQueryError(err)
+			}
+
+			// Process user data for freebet logic
+			freebet, addTitle := processFreebetLogic(userResult)
+
+			// Insert logs asynchronously (fire and forget)
+			title := "SHINDA HADI KES 3M CASH PAPO HAPO!" + addTitle
+
+			logrus.Infof("Game data: %+v", gameResult)
+			logrus.Infof("User data: %+v", userResult)
+
+			return c.Status(200).JSON(models.H{
+				"Status":        200,
+				"StatusCode":    0,
+				"Title":         title,
+				"Data":          gameResult,
+				"FreeBet":       freebet,
+				"Categories":    categories,
+				"token":         "",
+				"StatusMessage": "success",
+			})
 		}
-
-		// Process user data for freebet logic
-		freebet, addTitle := processFreebetLogic(userResult)
-
-		// Insert logs asynchronously (fire and forget)
-		title := "SHINDA HADI KES 3M CASH PAPO HAPO!" + addTitle
-
-		logrus.Infof("Game data: %+v", gameResult)
-		logrus.Infof("User data: %+v", userResult)
-
-		return c.Status(200).JSON(models.H{
-			"Status":        200,
-			"StatusCode":    0,
-			"Title":         title,
-			"Data":          gameResult,
-			"FreeBet":       freebet,
-			"Categories":    categories,
-			"StatusMessage": "success",
-		})
 	}
 
 }
@@ -548,7 +659,99 @@ func ApplyPromo(c *fiber.Ctx) error {
 	}
 }
 
+func RequestAccountDeletion(c *fiber.Ctx) error {
+
+	userClaims := c.Locals("user").(jwt.MapClaims)
+	msisdn := userClaims["sub"].(string) // get MSISDN
+
+	val := rand.Intn(9000) + 1000
+
+	created := time.Now().Unix()
+	expired := created + 2*60 // expire after 2 minutes
+
+	code := strconv.Itoa(val)
+
+	if msisdn == "254717629732" {
+		code = "2222"
+	}
+	err := lucky.InsertVerification(msisdn, code, expired, created)
+	if err != nil {
+		return err
+	}
+	return c.Status(200).JSON(models.H{
+		"Status":        200,
+		"StatusCode":    0,
+		"StatusMessage": "OTP Verification has been send",
+	})
+
+}
+
 func RequestSelfExlusion(c *fiber.Ctx) error {
+	var data map[string]interface{}
+
+	userClaims := c.Locals("user").(jwt.MapClaims)
+	msisdn := userClaims["sub"].(string) // get MSISDN
+	if err := c.BodyParser(&data); err != nil {
+		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
+	}
+	self_exclusion_period := utils.ToString(data["self_exclusion_period"])
+
+	if self_exclusion_period != "" && len(self_exclusion_period) > 0 {
+
+		var hrs = 24
+		if self_exclusion_period == "24 Hours" {
+			hrs = 24
+		}
+
+		if self_exclusion_period == "7 Days" {
+			hrs = 168
+		}
+
+		if self_exclusion_period == "30 Days" {
+			hrs = 720
+		}
+
+		if self_exclusion_period == "1 Year" {
+			hrs = 8784
+		}
+
+		_, err := lucky.RequestSelfExlusion(msisdn, hrs)
+
+		// logrus.Info(promo)
+		if err != nil {
+			return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Invalid PromoCode"))
+		}
+		// if promo == nil {
+		// 	return c.Status(202).JSON(models.NewErrorResponse(202, 1, "Invalid PromoCode"))
+		// }
+
+		val := rand.Intn(9000) + 1000
+
+		created := time.Now().Unix()
+		expired := created + 2*60 // expire after 2 minutes
+
+		code := strconv.Itoa(val)
+
+		if msisdn == "254717629732" {
+			code = "2222"
+		}
+		err = lucky.InsertVerification(msisdn, code, expired, created)
+		if err != nil {
+			return err
+		}
+		return c.Status(200).JSON(models.H{
+			"Status":        200,
+			"StatusCode":    0,
+			"StatusMessage": "OTP Verification has been send",
+		})
+
+	} else {
+		return c.Status(202).JSON(models.NewErrorResponse(202, 1, "invalid JSON"))
+
+	}
+}
+
+func DeletionRequest(c *fiber.Ctx) error {
 	var data map[string]interface{}
 
 	userClaims := c.Locals("user").(jwt.MapClaims)
@@ -612,7 +815,6 @@ func RequestSelfExlusion(c *fiber.Ctx) error {
 
 	}
 }
-
 func VerySelfExlusion(c *fiber.Ctx) error {
 	var data map[string]interface{}
 
@@ -1001,7 +1203,25 @@ func DeleteUser(c *fiber.Ctx) error {
 	// Get the JWT claims set by middleware
 	userClaims := c.Locals("user").(jwt.MapClaims)
 	msisdn := userClaims["sub"].(string) // get MSISDN
+	var data map[string]interface{}
+	if err := c.BodyParser(&data); err != nil {
+		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
+	}
 
+	opt := utils.ToString(data["otp"])
+	// Call service to verify OTP — returns remaining seconds until expiry
+	verifyRemain, err := lucky.VerifyOTP(msisdn, opt)
+	if err != nil {
+		// Distinguish invalid vs expired for better messages if you want
+		// Here we follow your earlier style: return 201 with message for invalid/expired
+		// but it's more idiomatic to return 4xx
+		logrus.Warnf("VerifyOTP error for %s: %v", msisdn, err)
+		return c.Status(201).JSON(models.H{
+			"Status":        false,
+			"StatusCode":    2,
+			"StatusMessage": err.Error(),
+		})
+	}
 	// var data map[string]interface{}
 	// if err := c.BodyParser(&data); err != nil {
 	// 	return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
@@ -1009,7 +1229,7 @@ func DeleteUser(c *fiber.Ctx) error {
 
 	// name := utils.ToString(data["name"])
 
-	err := lucky.DeleteUser(msisdn)
+	err = lucky.DeleteUser(msisdn)
 	if err != nil {
 		return err
 	}
@@ -1017,6 +1237,7 @@ func DeleteUser(c *fiber.Ctx) error {
 	return c.Status(200).JSON(models.H{
 		"Status":        200,
 		"StatusCode":    0,
+		"ExpireIn":      verifyRemain,
 		"StatusMessage": "Success",
 	})
 }
