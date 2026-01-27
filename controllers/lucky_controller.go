@@ -700,6 +700,25 @@ func RequestAccountDeletion(c *fiber.Ctx) error {
 	if msisdn == "254717629732" {
 		code = "2222"
 	}
+	if msisdn == "254718400000" {
+		code = "1111"
+	}
+
+	if msisdn == "254785100000" {
+		code = "1111"
+	}
+
+	if msisdn == "254720820000" {
+		code = "1111"
+	}
+
+	if msisdn == "254714388880" {
+		code = "1111"
+	}
+	if msisdn == "254703630000" {
+		code = "1111"
+	}
+
 	err := lucky.InsertVerification(msisdn, code, expired, created)
 	if err != nil {
 		return err
