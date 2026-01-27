@@ -557,6 +557,7 @@ func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDa
 
 	args = append(args, msisdn) // $1 for msisdn
 
+	
 	// Log for debugging
 	if startDate != nil && endDate != nil {
 		logrus.Infof("GetGames request: %+v", startDate)
@@ -567,6 +568,10 @@ func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDa
 					WHERE p.msisdn = $1 
 					AND c.date_created BETWEEN $2 AND $3
 					ORDER BY c.id DESC LIMIT $5 OFFSET $4;`
+
+		logrus.Infof("GetGames request: %+v", offset)
+		logrus.Infof("GetGames request: %+v", page_size)
+
 		args = append(args, *startDate, *endDate, offset, page_size) // $2, $3
 	} else {
 		// No date filter
@@ -578,7 +583,11 @@ func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDa
 				WHERE p.msisdn = $1 
 				ORDER BY c.id DESC 
 				LIMIT $2 OFFSET $3;`
-		args = append(args, offset, page_size) // $2, $3
+			logrus.Infof("GetGames request: %+v", query)
+		logrus.Infof("GetGames request: %+v", page_size)
+		logrus.Infof("GetGames request: %+v", offset)
+
+			args = append(args, offset, page_size) // $2, $3
 
 	}
 
@@ -596,6 +605,8 @@ func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDa
 
 	return db.scanRowsToMap(rows)
 }
+
+
 
 func (db *Database) CheckWithdrawal(ctx context.Context, msisdn string, startDate, endDate *string) ([]map[string]interface{}, error) {
 	var query string
