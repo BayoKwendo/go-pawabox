@@ -484,7 +484,12 @@ func (s *LuckyNumberService) GetOnlineUsers() ([]map[string]interface{}, error) 
 
 	return onlineusers, nil
 }
-func (s *LuckyNumberService) GetGameHistory(msisdn string, offset string, page_size string, startDate, endDate string) ([]map[string]interface{}, error) {
+func (s *LuckyNumberService) GetGameHistory(
+	msisdn string,
+	offset string,
+	page_size string,
+	startDate, endDate string,
+) (map[string]interface{}, error) { // ✅ map + error
 	if s == nil || s.db == nil {
 		logrus.Warnf("Service or DB not initialized: s=%p, s.db=%p", s, s.db)
 		return nil, fmt.Errorf("service or database not initialized")
@@ -501,14 +506,23 @@ func (s *LuckyNumberService) GetGameHistory(msisdn string, offset string, page_s
 		endPtr = &endDate
 	}
 	// Call DB method with date range
-	history, err := s.db.CheckGameHistory(ctx, msisdn, startPtr, endPtr, offset, page_size)
+	history, total, err := s.db.CheckGameHistory(ctx, msisdn, startPtr, endPtr, offset, page_size)
 	if err != nil {
 		logrus.Errorf("Error checking history for msisdn %s: %v", msisdn, err)
 		return nil, err
 	}
 
-	return history, nil
+	return map[string]interface{}{
+		"total":   total,
+		"history": history,
+	}, nil
+	// return history, total, nil
 }
+
+// type BetHistoryResponse struct {
+// 	Total   float64                  `json:"total"`
+// 	History []map[string]interface{} `json:"history"`
+// }
 
 func (s *LuckyNumberService) GetHistory(msisdn string, startDate, endDate string) ([]map[string]interface{}, error) {
 	if s == nil || s.db == nil {

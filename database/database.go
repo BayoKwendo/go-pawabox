@@ -551,62 +551,159 @@ func (db *Database) CheckHistory(ctx context.Context, msisdn string, startDate, 
 }
 
 // bet History
-func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDate, endDate *string, offset string, page_size string) ([]map[string]interface{}, error) {
-	var query string
-	var args []interface{}
+// func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDate, endDate *string, offset string, page_size string) ([]map[string]interface{}, error) {
+// 	var query string
+// 	var args []interface{}
 
-	args = append(args, msisdn) // $1 for msisdn
+// 	args = append(args, msisdn) // $1 for msisdn
 
-	
-	// Log for debugging
+// 	// Log for debugging
+// 	if startDate != nil && endDate != nil {
+// 		logrus.Infof("GetGames request: %+v", startDate)
+// 		// Filter by date range
+// 		query = `SELECT c.*, p.msisdn
+// 					FROM "CustomerLogs" c
+// 					INNER JOIN "Player" p ON c.customer_id = p.id::text
+// 					WHERE p.msisdn = $1
+// 					AND c.date_created BETWEEN $2 AND $3
+// 					ORDER BY c.id DESC LIMIT $5 OFFSET $4;`
+
+// 		logrus.Infof("GetGames request: %+v", offset)
+// 		logrus.Infof("GetGames request: %+v", page_size)
+
+// 		args = append(args, *startDate, *endDate, offset, page_size) // $2, $3
+// 	} else {
+// 		// No date filter
+// 		query = `SELECT
+// 					c.*,
+// 					p.msisdn
+// 				FROM "CustomerLogs" c
+// 				INNER JOIN "Player" p ON c.customer_id = p.id::text
+// 				WHERE p.msisdn = $1
+// 				ORDER BY c.id DESC
+// 				LIMIT $2 OFFSET $3;`
+// 			logrus.Infof("GetGames request: %+v", query)
+// 		logrus.Infof("GetGames request: %+v", page_size)
+// 		logrus.Infof("GetGames request: %+v", offset)
+
+// 			args = append(args, offset, page_size) // $2, $3
+
+// 	}
+
+// 	conn, err := db.pool.Acquire(ctx)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+// 	}
+// 	defer conn.Release()
+
+// 	rows, err := conn.Query(ctx, query, args...)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to execute query: %w", err)
+// 	}
+// 	defer rows.Close()
+
+// 	return db.scanRowsToMap(rows)
+// }
+
+func (db *Database) CheckGameHistory(
+	ctx context.Context,
+	msisdn string,
+	startDate, endDate *string,
+	offset, pageSize string,
+) ([]map[string]interface{}, float64, error) {
+
+	var (
+		historyQuery string
+		totalQuery   string
+		args         []interface{}
+		totalAmount  float64
+	)
+
+	// -------------------------------
+	// BET HISTORY QUERY
+	// -------------------------------
 	if startDate != nil && endDate != nil {
-		logrus.Infof("GetGames request: %+v", startDate)
-		// Filter by date range
-		query = `SELECT c.*, p.msisdn  
-					FROM "CustomerLogs" c 
-					INNER JOIN "Player" p ON c.customer_id = p.id::text  
-					WHERE p.msisdn = $1 
-					AND c.date_created BETWEEN $2 AND $3
-					ORDER BY c.id DESC LIMIT $5 OFFSET $4;`
+		historyQuery = `
+			SELECT 
+				c.*,
+				p.msisdn
+			FROM "CustomerLogs" c
+			INNER JOIN "Player" p ON c.customer_id = p.id::text
+			WHERE p.msisdn = $1
+			  AND c.date_created BETWEEN $2 AND $3
+			ORDER BY c.id DESC
+			LIMIT $5 OFFSET $4;
+		`
 
-		logrus.Infof("GetGames request: %+v", offset)
-		logrus.Infof("GetGames request: %+v", page_size)
+		totalQuery = `
+			SELECT COUNT(c.id)  totalAmount 
+			FROM "CustomerLogs" c
+			INNER JOIN "Player" p ON c.customer_id = p.id::text
+			WHERE p.msisdn = $1
+			  AND c.date_created BETWEEN $2 AND $3;
+		`
 
-		args = append(args, *startDate, *endDate, offset, page_size) // $2, $3
+		args = []interface{}{msisdn, *startDate, *endDate, offset, pageSize}
 	} else {
-		// No date filter
-		query = `SELECT 
-					c.*, 
-					p.msisdn  
-				FROM "CustomerLogs" c 
-				INNER JOIN "Player" p ON c.customer_id = p.id::text  
-				WHERE p.msisdn = $1 
-				ORDER BY c.id DESC 
-				LIMIT $2 OFFSET $3;`
-			logrus.Infof("GetGames request: %+v", query)
-		logrus.Infof("GetGames request: %+v", page_size)
-		logrus.Infof("GetGames request: %+v", offset)
+		historyQuery = `
+			SELECT 
+				c.*,
+				p.msisdn
+			FROM "CustomerLogs" c
+			INNER JOIN "Player" p ON c.customer_id = p.id::text
+			WHERE p.msisdn = $1
+			ORDER BY c.id DESC
+			LIMIT $2 OFFSET $3;
+		`
 
-			args = append(args, offset, page_size) // $2, $3
+		totalQuery = `
+			SELECT count(c.id) totalAmount
+			FROM "CustomerLogs" c
+			INNER JOIN "Player" p ON c.customer_id = p.id::text
+			WHERE p.msisdn = $1;
+		`
 
+		args = []interface{}{msisdn, pageSize, offset}
 	}
 
+	// -------------------------------
+	// DB CONNECTION
+	// -------------------------------
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+		return nil, 0, err
 	}
 	defer conn.Release()
 
-	rows, err := conn.Query(ctx, query, args...)
+	// -------------------------------
+	// FETCH BET HISTORY
+	// -------------------------------
+	rows, err := conn.Query(ctx, historyQuery, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute query: %w", err)
+		return nil, 0, err
 	}
 	defer rows.Close()
 
-	return db.scanRowsToMap(rows)
+	history, err := db.scanRowsToMap(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// -------------------------------
+	// FETCH TOTAL BET AMOUNT
+	// -------------------------------
+	totalArgs := args[:1]
+	if startDate != nil && endDate != nil {
+		totalArgs = args[:3]
+	}
+
+	err = conn.QueryRow(ctx, totalQuery, totalArgs...).Scan(&totalAmount)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return history, totalAmount, nil
 }
-
-
 
 func (db *Database) CheckWithdrawal(ctx context.Context, msisdn string, startDate, endDate *string) ([]map[string]interface{}, error) {
 	var query string
