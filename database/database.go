@@ -263,7 +263,7 @@ func (db *Database) CheckUserAttempted(ctx context.Context, msisdn string) (map[
 }
 
 func (db *Database) CheckSelfExclusion(ctx context.Context, msisdn string) (map[string]interface{}, error) {
-	query := `SELECT * FROM self_exlusion_request WHERE msisdn = $1  AND status = 'pending' order by id DESC LIMIT 1`
+	query := `SELECT * FROM compliance.self_exlusion_request WHERE msisdn = $1  AND status = 'pending' order by id DESC LIMIT 1`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -281,7 +281,7 @@ func (db *Database) CheckSelfExclusion(ctx context.Context, msisdn string) (map[
 }
 func (db *Database) CheckPromoCode(ctx context.Context, promo string) (map[string]interface{}, error) {
 
-	query := `SELECT * FROM "promocode" WHERE promocode = $1 AND expire = 'NO'`
+	query := `SELECT * FROM core.promocode WHERE promocode = $1 AND expire = 'NO'`
 
 	logrus.Infof("promo already : %s", promo)
 
@@ -302,7 +302,7 @@ func (db *Database) CheckPromoCode(ctx context.Context, promo string) (map[strin
 
 func (db *Database) CheckTransaction(ctx context.Context, transactionID string) (map[string]interface{}, error) {
 
-	query := `SELECT * FROM "deposit_requests" WHERE transaction_id = $1 `
+	query := `SELECT * FROM payments.deposit_requests WHERE transaction_id = $1 `
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -320,7 +320,7 @@ func (db *Database) CheckTransaction(ctx context.Context, transactionID string) 
 }
 
 func (db *Database) UpdateUserAviatorBalInfoLucky(ctx context.Context, amount float64, msisdn, name string) (int64, error) {
-	query := `UPDATE "Player" 
+	query := `UPDATE core.players 
               SET name = $1,
 				  monetary = monetary + $2,
 				  balance = balance + $3
@@ -340,10 +340,10 @@ func (db *Database) UpdateUserAviatorBalInfoLucky(ctx context.Context, amount fl
 	return result.RowsAffected(), nil
 }
 
-func (db *Database) UpdateUserInfo(ctx context.Context, msisdn, name string) (int64, error) {
-	query := `UPDATE "Player" 
-              SET name = $1
-              WHERE msisdn = $2`
+func (db *Database) UpdateUserInfo(ctx context.Context, player_id, name string) (int64, error) {
+	query := `UPDATE core.player_profiles
+              SET name = $1,first_name = $2
+              WHERE player_id = $3`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -351,16 +351,16 @@ func (db *Database) UpdateUserInfo(ctx context.Context, msisdn, name string) (in
 	}
 	defer conn.Release()
 
-	result, err := conn.Exec(ctx, query, name, msisdn)
+	result, err := conn.Exec(ctx, query, name, name, player_id)
 	if err != nil {
-		return 0, fmt.Errorf("failed to update user %s: %w", msisdn, err)
+		return 0, fmt.Errorf("failed to update user %s: %w", player_id, err)
 	}
 
 	return result.RowsAffected(), nil
 }
 
 func (db *Database) UpdateUserMsisdn(ctx context.Context, msisdn, newmsisdn string) (int64, error) {
-	query := `UPDATE "Player" 
+	query := `UPDATE core.players 
               SET msisdn = $1
               WHERE msisdn = $2`
 
@@ -379,9 +379,9 @@ func (db *Database) UpdateUserMsisdn(ctx context.Context, msisdn, newmsisdn stri
 }
 
 func (db *Database) UpdatePlayerSelf(ctx context.Context, msisdn string, hrs string) error {
-	query := `UPDATE "Player"
+	query := `UPDATE core.players
 						SET
-							self_exclusion = 'YES',
+							status = 'self_excluded',
 							self_exclusion_expiry = NOW() + ($1 * INTERVAL '1 hour')
 						WHERE msisdn = $2;`
 
@@ -400,7 +400,7 @@ func (db *Database) UpdatePlayerSelf(ctx context.Context, msisdn string, hrs str
 }
 
 func (db *Database) UpdateSelfExclusion(ctx context.Context, msisdn string) error {
-	query := `UPDATE self_exlusion_request 
+	query := `UPDATE compliance.self_exlusion_request 
               SET status = 'processed'
               WHERE msisdn = $1 AND status = 'pending'`
 
@@ -419,7 +419,7 @@ func (db *Database) UpdateSelfExclusion(ctx context.Context, msisdn string) erro
 }
 
 func (db *Database) UpdateUserWinStatus(ctx context.Context, msisdn, show_win string) (int64, error) {
-	query := `UPDATE "Player" 
+	query := `UPDATE core.players 
               SET show_win = $1
               WHERE msisdn = $2`
 	conn, err := db.pool.Acquire(ctx)
@@ -434,25 +434,25 @@ func (db *Database) UpdateUserWinStatus(ctx context.Context, msisdn, show_win st
 	return result.RowsAffected(), nil
 }
 
-func (db *Database) UpdateUserProfilePic(ctx context.Context, msisdn, filename string) (int64, error) {
-	query := `UPDATE "Player" 
+func (db *Database) UpdateUserProfilePic(ctx context.Context, player_id, filename string) (int64, error) {
+	query := `UPDATE core.player_profiles 
               SET profile_url = $1
-              WHERE msisdn = $2`
+              WHERE player_id = $2`
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to acquire connection: %w", err)
 	}
 	defer conn.Release()
-	result, err := conn.Exec(ctx, query, filename, msisdn)
+	result, err := conn.Exec(ctx, query, filename, player_id)
 	if err != nil {
-		return 0, fmt.Errorf("failed to update user %s: %w", msisdn, err)
+		return 0, fmt.Errorf("failed to update user %s: %w", player_id, err)
 	}
 	return result.RowsAffected(), nil
 }
 
 func (db *Database) DeleteUserInfo(ctx context.Context, msisdn string) (int64, error) {
-	query := `UPDATE "Player" 
-              SET active_status = 'inactive'
+	query := `UPDATE core.players 
+              SET status = 'closed'
               WHERE msisdn = $1`
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -466,7 +466,7 @@ func (db *Database) DeleteUserInfo(ctx context.Context, msisdn string) (int64, e
 	return result.RowsAffected(), nil
 }
 func (db *Database) CheckDepositRequestLucky(ctx context.Context, reference string) (map[string]interface{}, error) {
-	query := `SELECT * FROM "deposit_requests" 
+	query := `SELECT * FROM payments.deposit_requests 
               WHERE reference = $1 
               AND transaction_id IS NULL 
               AND status IS NULL 
@@ -490,7 +490,11 @@ func (db *Database) CheckDepositRequestLucky(ctx context.Context, reference stri
 // CheckUser checks if user exists in Player table
 func (db *Database) CheckUser(ctx context.Context, msisdn string) (map[string]interface{}, error) {
 
-	query := `SELECT * FROM "Player" WHERE msisdn = $1 `
+	query := `SELECT p.*, pp.*, ww.balance_minor balance
+				FROM core.players p
+				INNER JOIN core.player_profiles pp ON p.player_id = pp.player_id
+				INNER JOIN wallet.wallets ww ON p.player_id = ww.player_id
+				WHERE p.msisdn = $1;`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -563,7 +567,7 @@ func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDa
 		// Filter by date range
 		query = `SELECT c.*, p.msisdn  
 					FROM "CustomerLogs" c 
-					INNER JOIN "Player" p ON c.customer_id = p.id::text  
+					INNER JOIN core.players p ON c.customer_id = p.id::text  
 					WHERE p.msisdn = $1 
 					AND c.date_created BETWEEN $2 AND $3
 					ORDER BY c.id DESC LIMIT $5 OFFSET $4;`
@@ -574,7 +578,7 @@ func (db *Database) CheckGameHistory(ctx context.Context, msisdn string, startDa
 					c.*, 
 					p.msisdn  
 				FROM "CustomerLogs" c 
-				INNER JOIN "Player" p ON c.customer_id = p.id::text  
+				INNER JOIN core.players p ON c.customer_id = p.id::text  
 				WHERE p.msisdn = $1 
 				ORDER BY c.id DESC 
 				LIMIT $2 OFFSET $3;`
@@ -670,7 +674,7 @@ func (db *Database) GetOnlineUsers(ctx context.Context) ([]map[string]interface{
 	query = `SELECT 
 				COUNT(DISTINCT c.customer_id) AS online_users
 			FROM "CustomerLogs" c
-			INNER JOIN "Player" p 
+			INNER JOIN core.players p 
 				ON c.customer_id = p.id::text
 			WHERE  
 				c.date_created >= NOW() - INTERVAL '1 hour';`
@@ -787,48 +791,9 @@ func (db *Database) CheckJackpotWinnerKitty(ctx context.Context, msisdn string) 
 	return db.scanRowsToMap(rows)
 }
 
-// UpdateKPI updates or inserts KPI record
-func (db *Database) UpdateKPI(ctx context.Context) (int64, error) {
-	checkQuery := `SELECT id FROM "kpi" WHERE DATE(created_on) = CURRENT_DATE`
-
-	conn, err := db.pool.Acquire(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
-	}
-	defer conn.Release()
-
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	var existingID int64
-	err = tx.QueryRow(ctx, checkQuery).Scan(&existingID)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		insertQuery := `INSERT INTO "kpi" (date, handle, payout, ggr) 
-					   SELECT CURRENT_DATE, 0, 0, 0 FROM "HouseIncome"`
-		result, err := tx.Exec(ctx, insertQuery)
-		if err != nil {
-			return 0, fmt.Errorf("failed to insert kpi: %w", err)
-		}
-
-		if err := tx.Commit(ctx); err != nil {
-			return 0, fmt.Errorf("failed to commit transaction: %w", err)
-		}
-
-		return result.RowsAffected(), nil
-	} else if err != nil {
-		return 0, fmt.Errorf("failed to check existing kpi: %w", err)
-	}
-
-	return 0, nil
-}
-
 // UpdateJackpotKit updates jackpot kitty
 func (db *Database) UpdateJackpotKit(ctx context.Context, mvalue float64) (int64, error) {
-	query := `UPDATE "jackpot_kitty"
+	query := `UPDATE jackpot.kitty
 			 SET kitty = kitty + ($1 * (pct_slice / 100)),
 				 pct_to_target = ((kitty + ($1 * (pct_slice / 100))) / cost) * 100 
 			 WHERE LENGTH(name_init) = 0`
@@ -849,7 +814,7 @@ func (db *Database) UpdateJackpotKit(ctx context.Context, mvalue float64) (int64
 
 // UpdateJackpotKitNameInit updates jackpot kitty with name_init
 func (db *Database) UpdateJackpotKitNameInit(ctx context.Context, mvalue float64, nameInit string) (int64, error) {
-	query := `UPDATE "jackpot_kitty"
+	query := `UPDATE jackpot.kitty
 			 SET kitty = kitty + ($1 * (pct_slice / 100)),
 				 pct_to_target = ((kitty + ($1 * (pct_slice / 100))) / cost) * 100 
 			 WHERE LENGTH(name_init) > 0 AND name_init = $2`
@@ -869,7 +834,7 @@ func (db *Database) UpdateJackpotKitNameInit(ctx context.Context, mvalue float64
 }
 
 func (db *Database) UpdateJackpotKity(ctx context.Context, id int) (int64, error) {
-	query := `UPDATE "jackpot_kitty"
+	query := `UPDATE jackpot.kitty
 			 SET is_locked = 0 ,kitty = kitty-cost, win_count = win_count+ 1
 			 WHERE id = $1`
 
@@ -888,7 +853,7 @@ func (db *Database) UpdateJackpotKity(ctx context.Context, id int) (int64, error
 }
 
 func (db *Database) UpdatePlayerRestLossJackpot(ctx context.Context, cost float64, id int) (int64, error) {
-	query := `UPDATE "Player"
+	query := `UPDATE core.players
 			 SET jackpot_amount = jackpot_amount + $1, lost_count = 0
 			 WHERE id = $2`
 
@@ -907,7 +872,7 @@ func (db *Database) UpdatePlayerRestLossJackpot(ctx context.Context, cost float6
 }
 
 func (db *Database) UpdateJackpotKitUpdate(ctx context.Context, id int) (int64, error) {
-	query := `UPDATE "jackpot_kitty"
+	query := `UPDATE jackpot.kitty
 			 SET is_locked = 1 
 			 WHERE id = $1`
 
@@ -925,33 +890,9 @@ func (db *Database) UpdateJackpotKitUpdate(ctx context.Context, id int) (int64, 
 	return result.RowsAffected(), nil
 }
 
-// UpdateKPIHandle updates KPI handle
-func (db *Database) UpdateKPIHandle(ctx context.Context, mvalue float64) (int64, error) {
-	query := `UPDATE "kpi"
-             SET bet_count = bet_count + 1,
-                 bet = bet + $1,
-                 rtp = ((payout / CASE WHEN bet + $1 = 0 THEN 1 ELSE bet + $1 END) * 100)
-             WHERE DATE(created_on) = CURRENT_DATE`
-
-	conn, err := db.pool.Acquire(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
-	}
-	defer conn.Release()
-
-	// Only pass mvalue once since all placeholders are $1
-	result, err := conn.Exec(ctx, query, mvalue)
-	if err != nil {
-		return 0, fmt.Errorf("failed to update kpi handle: %w", err)
-	}
-
-	return result.RowsAffected(), nil
-}
-
 // CheckSettingKPI gets KPI settings
 func (db *Database) CheckSettingKPI(ctx context.Context) (map[string]interface{}, error) {
-	query := `SELECT rtp, payout, bet FROM "kpi" WHERE DATE(created_on) = CURRENT_DATE `
-
+	query := `SELECT rtp, payout, bet FROM core.kpi WHERE DATE(created_on) = CURRENT_DATE `
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire connection: %w", err)
@@ -971,8 +912,9 @@ func (db *Database) CheckSettingKPI(ctx context.Context) (map[string]interface{}
 
 // UpdateKPIPayouts updates KPI payouts
 func (db *Database) UpdateKPIPayouts(ctx context.Context, mvalue, withTaxAmount, exciseTaxAmount float64) (int64, error) {
-	query := `UPDATE "kpi"  
-			 SET withholding_tax_amount = withholding_tax_amount + $1, 
+	query := `UPDATE core.kpi  
+			 SET 
+			     withholding_tax_amount = withholding_tax_amount + $1, 
 				 excise_duty_tax_amount = excise_duty_tax_amount + $2, 
 				 rtp = (((payout + $3) / CASE WHEN bet = 0 THEN 1 ELSE bet END) * 100), 
 				 ggr = handle - (payout + $4), 
@@ -993,92 +935,10 @@ func (db *Database) UpdateKPIPayouts(ctx context.Context, mvalue, withTaxAmount,
 	return result.RowsAffected(), nil
 }
 
-// UpdateKPIPayouts updates KPI payouts
-func (db *Database) UpdateKPIPayoutSPIN(ctx context.Context, exciseTaxAmount float64) (int64, error) {
-	query := `UPDATE "kpi"  
-			 SET 
-				 excise_duty_tax_amount = excise_duty_tax_amount + $1, 
-				 rtp = (((payout) / CASE WHEN bet = 0 THEN 1 ELSE bet END) * 100), 
-				 ggr = handle - (payout)
-			 WHERE DATE(created_on) = CURRENT_DATE`
-
-	conn, err := db.pool.Acquire(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
-	}
-	defer conn.Release()
-
-	result, err := conn.Exec(ctx, query, exciseTaxAmount)
-	if err != nil {
-		return 0, fmt.Errorf("failed to update kpi payouts: %w", err)
-	}
-
-	return result.RowsAffected(), nil
-}
-
-// UpdateKPIRTP updates KPI RTP
-func (db *Database) UpdateKPIRTP(ctx context.Context) (int64, error) {
-	query := `UPDATE "kpi" 
-			 SET rtp = ((payout / CASE WHEN bet = 0 THEN 1 ELSE bet END) * 100) 
-			 WHERE DATE(created_on) = CURRENT_DATE`
-
-	conn, err := db.pool.Acquire(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
-	}
-	defer conn.Release()
-
-	result, err := conn.Exec(ctx, query)
-	if err != nil {
-		return 0, fmt.Errorf("failed to update kpi rtp: %w", err)
-	}
-
-	return result.RowsAffected(), nil
-}
-
-// UpdateKPIVIG updates KPI VIG
-func (db *Database) UpdateKPIVIG(ctx context.Context, mvalue float64) (int64, error) {
-	query := `UPDATE "kpi" SET vig = vig + $1 WHERE DATE(created_on) = CURRENT_DATE`
-
-	conn, err := db.pool.Acquire(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
-	}
-	defer conn.Release()
-
-	result, err := conn.Exec(ctx, query, mvalue)
-	if err != nil {
-		return 0, fmt.Errorf("failed to update kpi vig: %w", err)
-	}
-
-	return result.RowsAffected(), nil
-}
-
-// UpdateKPIDeposit updates KPI deposit
-func (db *Database) UpdateKPIDeposit(ctx context.Context, mvalue float64) (int64, error) {
-	query := `UPDATE "kpi" 
-			 SET handle = handle + $1, 
-				 ggr = handle - payout 
-			 WHERE DATE(created_on) = CURRENT_DATE`
-
-	conn, err := db.pool.Acquire(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
-	}
-	defer conn.Release()
-
-	result, err := conn.Exec(ctx, query, mvalue)
-	if err != nil {
-		return 0, fmt.Errorf("failed to update kpi deposit: %w", err)
-	}
-
-	return result.RowsAffected(), nil
-}
-
 // CheckGames gets active USSD games
 func (db *Database) CheckGames(ctx context.Context, category string) ([]map[string]interface{}, error) {
-	baseQuery := `SELECT id, name, title, category, name_init, description, bet_amount, boxes, max_win
-                  FROM "Games"
+	baseQuery := `SELECT id, name, provider, title, category, name_init, description, bet_amount,  max_win
+                  FROM catalog.games
                   WHERE status = 'active'`
 
 	var args []interface{}
@@ -1088,19 +948,18 @@ func (db *Database) CheckGames(ctx context.Context, category string) ([]map[stri
 	}
 
 	baseQuery += ` ORDER BY CASE id 
-                 WHEN 10 THEN 1
-                 WHEN 17 THEN 2
+                 WHEN 8 THEN 1
+                 WHEN 5 THEN 2
                  WHEN 16 THEN 3 
-                 WHEN 8 THEN 4
-                 WHEN 9 THEN 5
-                 WHEN 12 THEN 6
-                 WHEN 13 THEN 7
-                 WHEN 11 THEN 8
-                 WHEN 14 THEN 9
-                 WHEN 15 THEN 10
-                 ELSE 11
+                 WHEN 3 THEN 4
+                 WHEN 2 THEN 5
+                 WHEN 10 THEN 6
+                 WHEN 11 THEN 7
+                 WHEN 9 THEN 8
+                 WHEN 7 THEN 9
+                 WHEN 6 THEN 10
+                 ELSE 9
              END`
-
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire connection: %w", err)
@@ -1118,7 +977,7 @@ func (db *Database) CheckGames(ctx context.Context, category string) ([]map[stri
 
 // CheckGameONE gets a specific game by ID
 func (db *Database) CheckGameONE(ctx context.Context, catID string) (map[string]interface{}, error) {
-	query := `SELECT * FROM "Games" WHERE id = $1 AND status = 'active' `
+	query := `SELECT * FROM catalog.games WHERE id = $1 AND status = 'active' `
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1139,7 +998,7 @@ func (db *Database) CheckGameONE(ctx context.Context, catID string) (map[string]
 
 // CheckGamePlay gets a game by ID
 func (db *Database) CheckGamePlay(ctx context.Context, catID string) (map[string]interface{}, error) {
-	query := `SELECT * FROM "Games" WHERE id = $1 `
+	query := `SELECT * FROM catalog.games WHERE id = $1 `
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1180,7 +1039,7 @@ func (db *Database) CheckSetting(ctx context.Context) (map[string]interface{}, e
 
 // UpdateUserLucky updates user lucky count
 func (db *Database) UpdateUserLucky(ctx context.Context, msisdn string) (int64, error) {
-	query := `UPDATE "Player" 
+	query := `UPDATE core.players 
 			 SET free_bet_count = free_bet_count + 1,  
 				 freebet_count = freebet_count + 1, 
 				 free_bet = free_bet - 1 
@@ -1202,7 +1061,7 @@ func (db *Database) UpdateUserLucky(ctx context.Context, msisdn string) (int64, 
 
 // UpdateUserLuckyFree updates user free status
 func (db *Database) UpdateUserLuckyFree(ctx context.Context, msisdn string) (int64, error) {
-	query := `UPDATE "Player" SET is_free = 'NO' WHERE msisdn = $1 RETURNING id`
+	query := `UPDATE core.players SET is_free = 'NO' WHERE msisdn = $1 RETURNING id`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1221,7 +1080,7 @@ func (db *Database) UpdateUserLuckyFree(ctx context.Context, msisdn string) (int
 // UpdateUser updates user field
 func (db *Database) UpdateUser(ctx context.Context, name string, mvalue interface{}, id int64) (int64, error) {
 	// Use parameterized query to prevent SQL injection
-	query := fmt.Sprintf(`UPDATE "Player" SET %s = $1 WHERE id = $2 `, name)
+	query := fmt.Sprintf(`UPDATE core.players SET %s = $1 WHERE id = $2 `, name)
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1239,7 +1098,7 @@ func (db *Database) UpdateUser(ctx context.Context, name string, mvalue interfac
 
 // UpdateUserRTP updates user RTP
 func (db *Database) UpdateUserRTP(ctx context.Context, amount float64, id int64) (int64, error) {
-	query := `UPDATE "Player" 
+	query := `UPDATE core.players 
 			 SET is_free = 'NO', balance = balance - $1, rtp_player = (payout / CASE WHEN total_bets = 0 THEN 1 ELSE total_bets END) * 100 
 			 WHERE id = $2`
 
@@ -1259,12 +1118,12 @@ func (db *Database) UpdateUserRTP(ctx context.Context, amount float64, id int64)
 
 // UpdateUserLossCount updates user loss count
 func (db *Database) UpdateUserLossCount(ctx context.Context, mvalue float64, id int64) (int64, error) {
-	query := `UPDATE "Player" 
+	query := `UPDATE core.players 
 			 SET lost_count = lost_count + 1,
 				 total_loss_count = total_loss_count + 1, 
 				 rtp_player = (payout / CASE WHEN total_bets = 0 THEN 1 ELSE total_bets END) * 100,
 				 total_losses = total_losses + $1 
-			 WHERE id = $2 `
+			 WHERE player_id = $2 `
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1282,14 +1141,14 @@ func (db *Database) UpdateUserLossCount(ctx context.Context, mvalue float64, id 
 
 // UpdateUserBet updates user bet information
 func (db *Database) UpdateUserBet(ctx context.Context, mvalue float64, id int64) (int64, error) {
-	query := `UPDATE "Player" 
+	query := `UPDATE core.players 
 			 SET monetary = monetary + $1, 
 				 frequency = frequency + 1, 
 				 last_transaction_time = NOW(),
 				 total_bets = total_bets + $2,
 				 recency = EXTRACT(DAY FROM (NOW() - last_transaction_time)),
 				 last_stake_amount = $3 
-			 WHERE id = $4`
+			 WHERE player_id = $4`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1305,30 +1164,651 @@ func (db *Database) UpdateUserBet(ctx context.Context, mvalue float64, id int64)
 	return result.RowsAffected(), nil
 }
 
-// CreateBet creates a new bet
-func (db *Database) CreateBet(ctx context.Context, msisdn, selectedChoice string, amount float64, result, reference, betStatus, betType, gameCatID, gameName, channel string) (int64, error) {
-	query := `INSERT INTO "Bets" 
-			 (game_cat_id, game_name,channel, bet_type, result_status, results, reference, amount, msisdn, selected_number) 
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,$10)`
-
+func (db *Database) CreateBet(ctx context.Context, pool_id string, basketValue float64, playerID int64, witholdingjackpot, excise float64, sessionID int64, sessionStartedAt string, stakeGrossMinor float64, stakeNetMinor float64, vigMinor float64, jackpotMinor float64, selectedChoice string, amountMinor float64, result, reference, betStatus, betType, gameCatID, gameName, narrative, channel string) error {
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+		return fmt.Errorf("acquire conn: %w", err)
 	}
 	defer conn.Release()
 
-	resultExec, err := conn.Exec(ctx, query, gameCatID, gameName, channel, betType, betStatus, result, reference, amount, msisdn, selectedChoice)
+	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create bet: %w", err)
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	/* -----------------------------
+	   3️⃣ Lock wallet
+	------------------------------ */
+	var walletID int64
+	var balanceMinor string
+
+	// logrus.Infof("basket log insert u failed: %s", basketValue)
+
+	err = tx.QueryRow(
+		ctx,
+		`SELECT wallet_id, balance_minor
+		FROM wallet.wallets
+		WHERE player_id = $1
+		  AND currency = 'KES'
+		  AND type = 'real'
+		FOR UPDATE
+		`,
+		playerID,
+	).Scan(&walletID, &balanceMinor)
+
+	if err != nil {
+		return fmt.Errorf("wallet not found: %w", err)
 	}
 
-	return resultExec.RowsAffected(), nil
+	var balanceWithdrawalMinor string
+	var walletIDWithdraw int64
+
+	err = tx.QueryRow(
+		ctx,
+		`SELECT wallet_id, balance_minor
+		FROM wallet.wining_wallet
+		WHERE player_id = $1
+		  AND currency = 'KES'
+		  AND type = 'real'
+		FOR UPDATE
+		`,
+		playerID,
+	).Scan(&walletIDWithdraw, &balanceWithdrawalMinor)
+
+	if err != nil {
+		return fmt.Errorf("wallet withdrawal not found: %w", err)
+	}
+
+	var betID int64
+
+	if utils.ToFloat64(balanceWithdrawalMinor) > 0 && utils.ToFloat64(balanceWithdrawalMinor) >= utils.ToFloat64(amountMinor) {
+		_, err = tx.Exec(
+			ctx,
+			`UPDATE wallet.wining_wallet
+		SET balance_minor = balance_minor - $1
+		WHERE wallet_id = $2
+           AND balance_minor >= $1`,
+			utils.ToFloat64(amountMinor),
+			walletIDWithdraw,
+		)
+		if err != nil {
+			return fmt.Errorf("wallet update failed: %w", err)
+		}
+	}
+
+	newBalance := utils.ToFloat64(balanceMinor) - utils.ToFloat64(amountMinor)
+
+	logrus.Infof("invalid sessionStartedAt: %s", sessionStartedAt)
+
+	t, err := time.Parse(time.RFC3339, sessionStartedAt)
+	if err != nil {
+		return fmt.Errorf("invalid sessionStartedAt: %w", err)
+	}
+
+	err = tx.QueryRow(
+		ctx,
+		`INSERT INTO betting.bets (
+		player_id,
+		session_id,
+		session_started_at,
+		game_id,
+		placed_at,
+		stake_gross_minor,
+		stake_net_minor,
+		vig_minor,
+		jackpot_contrib_minor,
+		payout_gross_minor,
+		payout_net_minor,
+		tax_withheld_minor,
+		status,
+		reference,
+		tax_excise_minor
+	) VALUES (
+		$1, $2, $3, $4, NOW(),
+		$5, $6, $7, $8,
+		0, 0, 0,
+		'placed',
+		$9,$10
+	)
+	RETURNING bet_id`,
+		playerID,        // $1
+		sessionID,       // $2
+		t,               // $3
+		gameCatID,       // $4
+		stakeGrossMinor, // $5
+		stakeNetMinor,   // $6
+		vigMinor,        // $7
+		jackpotMinor,    // $8
+		reference,       // $10
+		excise,
+	).Scan(&betID)
+
+	if err != nil {
+		return fmt.Errorf("insert bet failed: %w", err)
+	}
+
+	/* -----------------------------
+	   4️⃣ Insert ledger (idempotent)
+	------------------------------ */
+	var ledgerID int64
+	var ledgerCreatedAt time.Time
+
+	err = tx.QueryRow(
+		ctx,
+		`
+		INSERT INTO wallet.ledger (
+			wallet_id, player_id, direction, type,
+			amount_minor, balance_after_minor,
+			reference_type, reference_id,
+			 description,idempotency_key
+		)
+		VALUES (
+			$1,$2,'debit','bet_stake',
+			$3,$4,
+			'bet',$5,
+			$6,$7
+		)
+		RETURNING entry_id, created_at
+		`,
+		walletID,
+		playerID,
+		amountMinor,
+		newBalance,
+		// depositID,
+		betID,
+		"Bet debited",
+		reference,
+	).Scan(&ledgerID, &ledgerCreatedAt)
+
+	if err != nil {
+		return fmt.Errorf("ledger insert failed: %w", err)
+	}
+
+	/* -----------------------------
+	   5️⃣ Update Bet With Ledger
+	------------------------------ */
+	_, err = tx.Exec(
+		ctx,
+		`
+		UPDATE wallet.wallets
+		SET balance_minor = $1
+		WHERE wallet_id = $2
+		`,
+		newBalance,
+		walletID,
+	)
+	if err != nil {
+		return fmt.Errorf("wallet update failed: %w", err)
+	}
+
+	/* -----------------------------
+	   5️⃣ Update Basket
+	------------------------------ */
+	_, err = tx.Exec(
+		ctx,
+		`UPDATE jackpot.pools
+		SET balance_minor = balance_minor + $1`,
+		utils.ToFloat64(basketValue),
+	)
+	if err != nil {
+		return fmt.Errorf("basket update failed: %w", err)
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO jackpot.pool_logs(debit, amount, pool_id, game_id, bet_id, narrative) VALUES ($1, $2, $3, $4, $5,$6)`,
+		utils.ToFloat64(basketValue), utils.ToFloat64(basketValue), utils.ToInt64(pool_id), gameCatID, betID, narrative,
+	)
+
+	if err != nil {
+		return fmt.Errorf("basket log insert u failed: %w", err)
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`
+		UPDATE betting.bets
+		SET ledger_debit_id = $1, ledger_debit_created_at = NOW()
+		WHERE bet_id = $2
+		`,
+		ledgerID,
+		betID,
+	)
+	if err != nil {
+		return fmt.Errorf("bets update failed: %w", err)
+	}
+
+	// update kpi
+	_, err = tx.Exec(
+		ctx,
+		`UPDATE core.kpi
+             SET bet_count = bet_count + 1,
+                 bet = bet + $1,
+				 vig = vig + $5,
+				excise_duty_tax_amount = excise_duty_tax_amount + $2, 
+				withholding_tax_amount = withholding_tax_amount + $3, 
+				rtp = (((payout + $3) / CASE WHEN bet + $1 = 0 THEN 1 ELSE bet + $1 END) * 100), 
+				ggr = handle - (payout + $4), 
+				payout = payout + $4
+             WHERE DATE(created_on) = CURRENT_DATE
+		`,
+		amountMinor,
+		excise,
+		witholdingjackpot,
+		jackpotMinor,
+		vigMinor,
+	)
+	if err != nil {
+		return fmt.Errorf("bets update failed: %w", err)
+	}
+
+	if excise > 0 {
+		// record tax
+		err = tx.QueryRow(
+			ctx,
+			`INSERT INTO compliance.tax_records (
+			 player_id, reference_type, reference_id,
+			amount_minor, tax_type
+		)
+		VALUES (
+			$1,'bet stake',$2,
+			$3,'excise'
+		) RETURNING tax_id
+		`,
+			playerID,
+			betID,
+			excise,
+		).Scan(&ledgerID)
+
+		if err != nil {
+			return fmt.Errorf("tax record insert excise failed: %w", err)
+		}
+	}
+
+	// House income VIG
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO jackpot.house_income( vig, pool_id, game_id, bet_id) VALUES ($1, $2, $3, $4)`,
+		vigMinor, utils.ToInt64(pool_id), gameCatID, betID,
+	)
+
+	// logrus.Infof("basket update failed: %s", err)
+
+	if err != nil {
+		return fmt.Errorf("basket log insert u failed: %w", err)
+	}
+
+	// if witholdingjackpot > 0 {
+
+	// 	err = tx.QueryRow(
+	// 		ctx,
+	// 		`INSERT INTO compliance.tax_records (
+	// 		 player_id, reference_type, reference_id,
+	// 		amount_minor, tax_type
+	// 	)
+	// 	VALUES (
+	// 		$1,'bet stake jackpot deduction',$2,
+	// 		$3,'withholding'
+	// 	) RETURNING tax_id`,
+	// 		playerID,
+	// 		betID,
+	// 		witholdingjackpot,
+	// 	).Scan(&ledgerID)
+
+	// 	logrus.Infof("tax record insert withholding failed: %s", err)
+
+	// 	if err != nil {
+	// 		return fmt.Errorf("tax record insert withholding failed: %w", err)
+	// 	}
+	// }
+
+	_, err = tx.Exec(
+		ctx,
+		`	WITH updated_kitties AS (
+        UPDATE jackpot.kitty
+        SET
+            kitty = kitty + ($1 * (pct_slice / 100)),
+            pct_to_target = ((kitty + ($1 * (pct_slice / 100))) / cost) * 100
+        WHERE LENGTH(name_init) = 0
+        RETURNING
+            id AS pool_id,
+            ($1 * (pct_slice / 100)) AS amount_minor
+    )
+    INSERT INTO jackpot.contributions (
+        bet_id,
+        bet_placed_at,
+        pool_id,
+        amount_minor,
+        ledger_entry_id,
+        ledger_entry_created_at
+    )
+    SELECT
+        $2,
+        NOW(),
+        pool_id,
+        amount_minor,
+        $3,
+        NOW()
+    FROM updated_kitties
+    `,
+		jackpotMinor, // $1
+		betID,        // $2
+		ledgerID,     // $4 (nullable ok)
+	)
+
+	if err != nil {
+		return fmt.Errorf("jackpot update + contribution insert failed: %w", err)
+	}
+
+	tx.Commit(ctx)
+
+	return nil
+}
+
+// UpdateLuckyBetAndLoss updates bet outcome and player loss stats atomically
+func (db *Database) UpdateLuckyBetAndLoss(
+	ctx context.Context,
+	result string,
+	reference string,
+	lossAmount float64,
+	playerID int64,
+) error {
+
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1️⃣ Update bet
+	betQuery := `
+		UPDATE betting.bets
+		SET outcome = $1,
+		    status  = 'lost'
+		WHERE reference = $2
+	`
+	res, err := tx.Exec(ctx, betQuery, result, reference)
+	if err != nil {
+		return fmt.Errorf("update bet: %w", err)
+	}
+
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("bet not found: %s", reference)
+	}
+
+	// 2️⃣ Update player loss stats
+	playerQuery := `
+		UPDATE core.players
+		SET lost_count        = lost_count + 1,
+		    total_loss_count  = total_loss_count + 1,
+		    total_losses      = total_losses + $1,
+		    rtp_player        = (payout / NULLIF(total_bets, 0)) * 100
+		WHERE player_id = $2
+	`
+	_, err = tx.Exec(ctx, playerQuery, lossAmount, playerID)
+	if err != nil {
+		return fmt.Errorf("update player loss: %w", err)
+	}
+
+	// 3️⃣ Commit once
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+
+	return nil
+}
+
+func (db *Database) CreateWin(ctx context.Context, pool_id int64, playerID int64, witholdingjackpot, net float64, sessionID int64, sessionStartedAt string, amountMinor float64, result, reference, betStatus, betType, gameCatID, gameName, narrative, channel string) error {
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire conn: %w", err)
+	}
+	defer conn.Release()
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	/* -----------------------------
+	   3️⃣ Lock wallet
+	------------------------------ */
+	var walletID int64
+	var balanceMinor string
+
+	err = tx.QueryRow(
+		ctx,
+		`
+		SELECT wallet_id, balance_minor
+		FROM wallet.wallets
+		WHERE player_id = $1
+		  AND currency = 'KES'
+		  AND type = 'real'
+		FOR UPDATE
+		`,
+		playerID,
+	).Scan(&walletID, &balanceMinor)
+
+	if err != nil {
+		return fmt.Errorf("wallet not found: %w", err)
+	}
+
+	var betID int64
+
+	newBalance := utils.ToFloat64(balanceMinor) + utils.ToFloat64(net)
+
+	// t, err := time.Parse(time.RFC3339, sessionStartedAt)
+	// if err != nil {
+	// 	return fmt.Errorf("invalid sessionStartedAt: %w", err)
+	// }
+
+	err = tx.QueryRow(
+		ctx,
+		`
+		SELECT bet_id	FROM betting.bets
+		WHERE reference = $1
+		FOR UPDATE
+		`,
+		reference,
+	).Scan(&betID)
+
+	if err != nil {
+		return fmt.Errorf("bet not found: %w", err)
+	}
+
+	/* -----------------------------
+	   4️⃣ Insert ledger (idempotent)
+	------------------------------ */
+	var ledgerID int64
+	var ledgerCreatedAt time.Time
+
+	err = tx.QueryRow(
+		ctx,
+		`
+		INSERT INTO wallet.ledger (
+			wallet_id, player_id, direction, type,
+			amount_minor, balance_after_minor,
+			reference_type, reference_id,
+			 description,idempotency_key
+		)
+		VALUES (
+			$1,$2,'credit','win',
+			$3,$4,
+			'winning',$5,
+			$6,$7
+		)
+		RETURNING entry_id, created_at
+		`,
+		walletID,
+		playerID,
+		net,
+		newBalance,
+		betID,
+		"Wining credited",
+		reference,
+	).Scan(&ledgerID, &ledgerCreatedAt)
+	if err != nil {
+		return fmt.Errorf("ledger insert failed: %w", err)
+	}
+
+	/* -----------------------------
+	   5️⃣ Update Bet With Ledger
+	------------------------------ */
+	_, err = tx.Exec(
+		ctx,
+		`
+		UPDATE wallet.wallets
+		SET balance_minor = $1
+		WHERE wallet_id = $2
+		`,
+		newBalance,
+		walletID,
+	)
+	if err != nil {
+		return fmt.Errorf("wallet update failed: %w", err)
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`
+		UPDATE jackpot.pools 
+		SET balance_minor = balance_minor - $1 
+		WHERE balance_minor >= $1`, // Ensure we don't go negative
+		amountMinor,
+	)
+	if err != nil {
+		return fmt.Errorf("wallet update failed: %w", err)
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO jackpot.pool_logs(credit, amount, pool_id, game_id, bet_id, narrative) VALUES ($1, $2, $3, $4, $5, $6)`,
+		utils.ToFloat64(amountMinor), -1*utils.ToFloat64(amountMinor), utils.ToInt64(pool_id), gameCatID, betID, narrative,
+	)
+
+	if err != nil {
+		return fmt.Errorf("basket log insert u failed: %w", err)
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`
+		UPDATE betting.bets
+		SET status = 'won', outcome = $3, ledger_debit_id = $1, ledger_debit_created_at = NOW()
+		WHERE bet_id = $2
+		`,
+		ledgerID,
+		betID,
+		result,
+	)
+	if err != nil {
+		return fmt.Errorf("bets update failed: %w", err)
+	}
+
+	// update kpi
+	_, err = tx.Exec(
+		ctx,
+		`UPDATE core.kpi
+             SET  withholding_tax_amount = withholding_tax_amount + $1, 
+				 rtp = (((payout + $2) / CASE WHEN bet = 0 THEN 1 ELSE bet END) * 100), 
+				 ggr = handle - (payout + $2), 
+				 payout = payout + $2 
+             WHERE DATE(created_on) = CURRENT_DATE
+		`,
+		witholdingjackpot,
+		amountMinor,
+	)
+	if err != nil {
+		return fmt.Errorf("bets update failed: %w", err)
+	}
+
+	if witholdingjackpot > 0 {
+
+		err = tx.QueryRow(
+			ctx,
+			`INSERT INTO compliance.tax_records (
+					player_id, reference_type, reference_id,
+					amount_minor, tax_type
+				)
+				VALUES (
+					$1, 'withholding deduction', $2,
+					$3, 'withholding'
+				)
+				RETURNING tax_id`,
+			playerID,
+			betID,
+			witholdingjackpot,
+		).Scan(&ledgerID)
+
+		if err != nil {
+			logrus.Errorf("tax record insert withholding failed: %v", err)
+			return fmt.Errorf("tax record insert withholding failed: %w", err)
+		}
+	}
+
+	var withdrawalLogID int64
+	err = tx.QueryRow(
+		ctx,
+		`INSERT INTO payments.withdrawals_logs (
+		player_id, amount, net_amount, tax_amount,
+		game_id, bet_id, items, reference
+	)
+	VALUES (
+		$1,$2,$3,$4,$5,$6,$7,$8
+	)
+	RETURNING id`,
+		playerID,                    // $1
+		amountMinor,                 // $2
+		net,                         // $3
+		witholdingjackpot,           // $4
+		reference,                   // $5  <-- FIX: was reference
+		betID,                       // $6
+		utils.ToString(amountMinor), // $7 (items?)
+		reference,                   // $8
+	).Scan(&withdrawalLogID)
+
+	if err != nil {
+		logrus.Errorf("withdrawals log insert failed: %v", err)
+		return fmt.Errorf("withdrawals log insert failed: %w", err)
+	}
+
+	// winning wallet
+	_, err = tx.Exec(
+		ctx,
+		`
+		UPDATE wallet.wining_wallet
+		SET balance_minor =balance_minor+ $1
+		WHERE player_id = $2
+		`,
+		net,
+		playerID,
+	)
+	if err != nil {
+		return fmt.Errorf("wallet update failed: %w", err)
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`UPDATE core.players
+		SET lost_count = 0
+		WHERE player_id = $1
+		`,
+		playerID,
+	)
+	if err != nil {
+		return fmt.Errorf("player update failed: %w", err)
+	}
+	tx.Commit(ctx)
+
+	return nil
 }
 
 // InsertVerification inserts a new verification code
 func (db *Database) InsertVerification(ctx context.Context, msisdn, code string, expired int64, created int64) (int64, error) {
 	query := `
-		INSERT INTO verification 
+		INSERT INTO core.verification 
 		(msisdn, code, expired, created)
 		VALUES ($1, $2, $3, $4)
 	`
@@ -1347,10 +1827,52 @@ func (db *Database) InsertVerification(ctx context.Context, msisdn, code string,
 	return resultExec.RowsAffected(), nil
 }
 
+func (db *Database) InsertSessionID(
+	ctx context.Context,
+	playerID int64,
+	channel string,
+	hours int64,
+	now time.Time,
+) (int64, error) {
+
+	query := `
+		INSERT INTO core.player_sessions (
+			player_id,
+			channel,
+			ended_at,
+			started_at
+		)
+		VALUES (
+			$1,
+			$2,
+			NOW() + ($3 * INTERVAL '1 hour'), $4
+		)
+		RETURNING session_id
+	`
+
+	var sessionID int64
+
+	err := db.pool.QueryRow(
+		ctx,
+		query,
+		playerID,
+		channel,
+		hours,
+		now,
+	).Scan(&sessionID)
+
+	logrus.Infof("failed to insert player session: %s", err)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert player session: %w", err)
+	}
+
+	return sessionID, nil
+}
+
 // RequestSelfExlusion inserts a new verification code
 func (db *Database) RequestSelfExlusion(ctx context.Context, msisdn string, hrs int) (int64, error) {
 	query := `
-		INSERT INTO self_exlusion_request 
+		INSERT INTO compliance.self_exlusion_request 
 		(msisdn, value_hrs)
 		VALUES ($1, $2)
 	`
@@ -1370,21 +1892,21 @@ func (db *Database) RequestSelfExlusion(ctx context.Context, msisdn string, hrs 
 }
 
 // UpdateLuckyBet updates bet result
-func (db *Database) UpdateLuckyBet(ctx context.Context, result, game, reference, betStatus string) (int64, error) {
-	query := `UPDATE "Bets" 
-			 SET result_status = $1, 
-				 status = 'processed', 
-				 results = $2 ,
-				 game = $3
-			 WHERE reference = $4 `
+func (db *Database) UpdateLuckyBet(ctx context.Context, result string, reference string) (int64, error) {
+	query := `UPDATE betting.bets 
+			 SET outcome = $1, 
+				 status = 'lost'
+			 WHERE reference = $2 `
 
 	conn, err := db.pool.Acquire(ctx)
+
+	logrus.Infof("failed to acquire connection: %s", reference)
 	if err != nil {
 		return 0, fmt.Errorf("failed to acquire connection: %w", err)
 	}
 	defer conn.Release()
 
-	resultExec, err := conn.Exec(ctx, query, betStatus, result, game, reference)
+	resultExec, err := conn.Exec(ctx, query, result, reference)
 	if err != nil {
 		return 0, fmt.Errorf("failed to update lucky bet: %w", err)
 	}
@@ -1417,8 +1939,7 @@ func (db *Database) UpdateLuckyBetWin(ctx context.Context, result, game, referen
 }
 
 // CreateUser creates a new user
-func (db *Database) CreateUser(ctx context.Context, carrier, msisdn string, name string, my_promocode string, promocode string) (int64, error) {
-	query := `INSERT INTO "Player" (carrier, msisdn, name, promocode, my_promocode) VALUES ($1, $2, $3, $4, $5)`
+func (db *Database) CreateUser(ctx context.Context, carrier, msisdn, name, myPromocode, promocode string) (int64, error) {
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1426,16 +1947,90 @@ func (db *Database) CreateUser(ctx context.Context, carrier, msisdn string, name
 	}
 	defer conn.Release()
 
-	result, err := conn.Exec(ctx, query, carrier, msisdn, name, promocode, my_promocode)
+	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create user: %w", err)
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx) // safe rollback on error
+
+	var playerID int64
+
+	// Insert into core.players
+	err = tx.QueryRow(
+		ctx,
+		`INSERT INTO core.players (msisdn, phone, username, referred_by_code, my_promo_code)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING player_id`,
+		msisdn, msisdn, msisdn, promocode, myPromocode,
+	).Scan(&playerID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create player: %w", err)
 	}
 
-	return result.RowsAffected(), nil
+	// Insert into core.players_profiles
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO core.player_profiles (player_id,name, first_name)
+		 VALUES ($1, $2,$3)`,
+		playerID, name, name,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create player profile: %w", err)
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO wallet.wallets (player_id)
+		 VALUES ($1)`,
+		playerID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create player profile: %w", err)
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO wallet.wining_wallet (player_id)
+		 VALUES ($1)`,
+		playerID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create wining_wallet profile: %w", err)
+	}
+	// Insert into core.registration
+	var registrationID int64
+	err = tx.QueryRow(
+		ctx,
+		`INSERT INTO core.registration (player_id, msisdn, promo_code)
+		 VALUES ($1, $2, $3)
+		 RETURNING registration_id`,
+		playerID, msisdn, myPromocode,
+	).Scan(&registrationID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create registration: %w", err)
+	}
+
+	// Insert into core.registration_attempts
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO core.registration_attempts (registration_id, msisdn, outcome)
+		 VALUES ($1, $2, $3)`,
+		registrationID, msisdn, "success",
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create registration attempt: %w", err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return playerID, nil
 }
 
 func (db *Database) CreatePromo(ctx context.Context, msisdn string, promocode string) (int64, error) {
-	query := `INSERT INTO "promocode" (promocode, msisdn) VALUES ($1, $2)`
+	query := `INSERT INTO core.promocode (promocode, msisdn) VALUES ($1, $2)`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1490,7 +2085,7 @@ func (db *Database) DeleteUserAttempted(ctx context.Context, msisdn string) (int
 
 // CheckJackpotWinner checks for available jackpot winners
 func (db *Database) CheckJackpotWinner(ctx context.Context) (map[string]interface{}, error) {
-	query := `SELECT * FROM "jackpot_kitty" 
+	query := `SELECT * FROM jackpot.kitty 
 			 WHERE is_locked = 0 AND kitty > 0 AND kitty >= cost AND release_jackpot = 'yes' 
 			 ORDER BY RANDOM() `
 
@@ -1514,7 +2109,7 @@ func (db *Database) CheckJackpotWinner(ctx context.Context) (map[string]interfac
 func (db *Database) GetOTPVerified(ctx context.Context, msisdn, code string, now int64) (map[string]interface{}, error) {
 	query := `
 		SELECT *
-		FROM verification
+		FROM core.verification
 		WHERE msisdn = $1 AND code = $2 AND expired > $3
 		LIMIT 1
 	`
@@ -1538,7 +2133,7 @@ func (db *Database) GetOTPVerified(ctx context.Context, msisdn, code string, now
 func (db *Database) GetOTPChecked(ctx context.Context, msisdn, code string) (map[string]interface{}, error) {
 	query := `
 		SELECT *
-		FROM verification
+		FROM core.verification
 		WHERE status = 0 AND msisdn = $1 AND code = $2
 		LIMIT 1
 	`
@@ -1560,7 +2155,7 @@ func (db *Database) GetOTPChecked(ctx context.Context, msisdn, code string) (map
 
 // UpdateIntoVerification marks the verification as used (status = 1) and returns affected rows
 func (db *Database) UpdateIntoVerification(ctx context.Context, id int32) (int64, error) {
-	query := `UPDATE verification SET status = 1 WHERE id = $1`
+	query := `UPDATE core.verification SET status = 1 WHERE id = $1`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1576,8 +2171,42 @@ func (db *Database) UpdateIntoVerification(ctx context.Context, id int32) (int64
 	return res.RowsAffected(), nil
 }
 
+func (db *Database) UpdateIntoRegistration(ctx context.Context, msisdn string) (int64, error) {
+	query := `UPDATE core.registration SET status = 'registered' WHERE msisdn = $1`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	res, err := conn.Exec(ctx, query, msisdn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to execute UpdateIntoVerification: %w", err)
+	}
+
+	return res.RowsAffected(), nil
+}
+
+func (db *Database) UpdateIntoPlayer(ctx context.Context, msisdn string) (int64, error) {
+	query := `UPDATE core.players SET last_login_at = NOW() WHERE msisdn = $1`
+
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	res, err := conn.Exec(ctx, query, msisdn)
+	if err != nil {
+		return 0, fmt.Errorf("failed to execute UpdateIntoVerification: %w", err)
+	}
+
+	return res.RowsAffected(), nil
+}
+
 func (db *Database) UpdateIntoVerificationOld(ctx context.Context, msisdn string) (int64, error) {
-	query := `UPDATE verification SET status = 1 WHERE status = 0 and msisdn = $1`
+	query := `UPDATE core.verification SET status = 1 WHERE status = 0 and msisdn = $1`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1595,7 +2224,7 @@ func (db *Database) UpdateIntoVerificationOld(ctx context.Context, msisdn string
 
 // CheckBasketLucky checks basket
 func (db *Database) CheckBasketLucky(ctx context.Context) (map[string]interface{}, error) {
-	query := `SELECT * FROM "Basket" `
+	query := `SELECT * FROM jackpot.pools `
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -1732,35 +2361,280 @@ func (db *Database) CheckHousePawaBoxKe(ctx context.Context) (map[string]interfa
 }
 
 // UpdateAviatorDepositRequestLucky updates deposit request to success status
-func (db *Database) UpdateAviatorDepositRequestLucky(ctx context.Context, transactionID, reference, description string) (int64, error) {
-	query := `UPDATE "deposit_requests" 
-	SET status = 'success', transaction_id = $1, description = $2 
-	WHERE reference = $3`
-
-	log.Printf("Updating deposit request to success: ref=%s, transaction_id=%s", reference, transactionID)
-
+func (db *Database) UpdateAviatorDepositRequestLucky(
+	ctx context.Context,
+	data map[string]interface{},
+	transactionID string,
+	reference string,
+	description string,
+) error {
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
-		log.Printf("Error acquiring connection for deposit update: %v", err)
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+		return fmt.Errorf("acquire conn: %w", err)
 	}
 	defer conn.Release()
 
-	result, err := conn.Exec(ctx, query, transactionID, description, reference)
+	tx, err := conn.Begin(ctx)
 	if err != nil {
-		log.Printf("Error updating deposit request: %v", err)
-		return 0, fmt.Errorf("failed to update deposit request: %w", err)
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	/* -----------------------------
+	   1️⃣ Update deposit_request
+	------------------------------ */
+	cmdTag, err := tx.Exec(
+		ctx,
+		`UPDATE payments.deposit_requests
+		SET status = 'success',
+		    transaction_id = $1,
+		    description = $2
+		WHERE reference = $3`,
+		transactionID,
+		description,
+		reference,
+	)
+	if err != nil {
+		return fmt.Errorf("update deposit_request: %w", err)
 	}
 
-	rowsAffected := result.RowsAffected()
-	log.Printf("Deposit request updated to success: ref=%s, rows_affected=%d", reference, rowsAffected)
+	if cmdTag.RowsAffected() == 0 {
+		return fmt.Errorf("deposit_request not found: %s", reference)
+	}
 
-	return rowsAffected, nil
+	/* -----------------------------
+	   2️⃣ Fetch deposit (partition-safe)
+	------------------------------ */
+	var depositID int64
+	var playerID int64
+	var requestedAt time.Time
+	var provider string
+	var amountMinor int64
+
+	err = tx.QueryRow(
+		ctx,
+		`SELECT deposit_id,amount_minor, provider, player_id, requested_at
+		FROM payments.deposits
+		WHERE external_ref = $1
+		ORDER BY requested_at DESC
+		LIMIT 1
+		`,
+		reference,
+	).Scan(&depositID, &amountMinor, &provider, &playerID, &requestedAt)
+
+	if err != nil {
+		return fmt.Errorf("deposit not found: %w", err)
+	}
+
+	/* -----------------------------
+	   3️⃣ Lock wallet
+	------------------------------ */
+	var walletID int64
+	var balanceMinor int64
+
+	err = tx.QueryRow(
+		ctx,
+		`
+		SELECT wallet_id, balance_minor
+		FROM wallet.wallets
+		WHERE player_id = $1
+		  AND currency = 'KES'
+		  AND type = 'real'
+		FOR UPDATE
+		`,
+		playerID,
+	).Scan(&walletID, &balanceMinor)
+
+	if err != nil {
+		return fmt.Errorf("wallet not found: %w", err)
+	}
+
+	// -------------------------------------------------
+	// 1️⃣ Resolve operator_id from operator_name
+	// -------------------------------------------------
+	var operatorID int64
+
+	err = tx.QueryRow(
+		ctx,
+		`
+	SELECT operator_id
+	FROM payments.mobile_operators
+	WHERE operator_name = $1
+	`,
+		provider, // <-- operator name (e.g. "SAFARICOM", "AIRTEL")
+	).Scan(&operatorID)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("mobile operator not found: %s", provider)
+		}
+		return fmt.Errorf("failed to fetch operator_id: %w", err)
+	}
+
+	// logrus.Infof("failed to fetch operator_id: %s", operatorID)
+
+	// // -------------------------------------------------
+	// // 2️⃣ Insert MNO deposit transaction
+	// // -------------------------------------------------
+	var transactionIDMNO int64
+
+	err = tx.QueryRow(
+		ctx,
+		`
+	INSERT INTO payments.transactions_log
+		(
+			deposit_id,
+			transaction_ref,
+			amount_minor,
+			status_description,
+			transaction_date,
+			account_reference,
+			operator_id,
+			raw_response
+		)
+	VALUES
+		($1,$2,$3,$4,NOW(),$5,$6,$7)
+	RETURNING transaction_id
+	`,
+		depositID,
+		transactionID,
+		amountMinor, // minor units
+		description,
+		reference,
+		operatorID,
+		data,
+	).Scan(&transactionIDMNO)
+
+	if err != nil {
+		return fmt.Errorf("failed to insert transactions_log: %w", err)
+	}
+
+	newBalance := balanceMinor + amountMinor
+
+	/* -----------------------------
+	   4️⃣ Insert ledger (idempotent)
+	------------------------------ */
+	var ledgerID int64
+	var ledgerCreatedAt time.Time
+
+	err = tx.QueryRow(
+		ctx,
+		`
+		INSERT INTO wallet.ledger (
+			wallet_id, player_id, direction, type,
+			amount_minor, balance_after_minor,
+			reference_type, reference_id,
+			idempotency_key, description
+		)
+		VALUES (
+			$1,$2,'credit','deposit',
+			$3,$4,
+			'deposit',$5,
+			$6,$7
+		)
+		RETURNING entry_id, created_at
+		`,
+		walletID,
+		playerID,
+		amountMinor,
+		newBalance,
+		depositID,
+		reference,
+		"Deposit credited",
+	).Scan(&ledgerID, &ledgerCreatedAt)
+
+	if err != nil {
+		return fmt.Errorf("ledger insert failed: %w", err)
+	}
+
+	/* -----------------------------
+	   5️⃣ Update wallet
+	------------------------------ */
+	_, err = tx.Exec(
+		ctx,
+		`
+		UPDATE wallet.wallets
+		SET balance_minor = $1
+		WHERE wallet_id = $2
+		`,
+		newBalance,
+		walletID,
+	)
+	if err != nil {
+		return fmt.Errorf("wallet update failed: %w", err)
+	}
+	_, err = tx.Exec(
+		ctx,
+		`UPDATE core.kpi 
+			 SET handle = handle + $1, 
+				 ggr = handle - payout 
+			 WHERE DATE(created_on) = CURRENT_DATE
+		`,
+		amountMinor,
+	)
+	if err != nil {
+		return fmt.Errorf("wallet update failed: %w", err)
+	}
+
+	logrus.Infof("depositID=%T(%v), ledgerID=%T(%v), reference=%T(%v), transactionID=%T(%v)",
+		depositID, depositID,
+		ledgerID, ledgerID,
+		reference, reference,
+		transactionID, transactionID,
+	)
+
+	/* -----------------------------
+	   6️⃣ Update deposit
+	------------------------------ */
+	_, err = tx.Exec(
+		ctx,
+		`UPDATE payments.deposits
+		SET status = 'completed',
+			ledger_entry_id = $1,
+			ledger_entry_created_at = now(),
+			completed_at = now(),
+			transaction_ref = $2
+		WHERE deposit_id = $3`,
+		ledgerID,
+		transactionID,
+		depositID,
+	)
+	if err != nil {
+		return fmt.Errorf("deposit update failed: %w", err)
+	}
+	receivedAt := time.Now().UTC() // make sure it's in the correct partition
+
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO payments.deposit_callbacks (
+			deposit_id,
+			deposit_requested_at,
+			provider,
+			external_ref,
+			payload,
+			received_at,
+			mno_transaction_id,
+			transaction_date
+		)
+		VALUES ($1,  now(), $2, $3, $4, $5,$6, now())`,
+		depositID,
+		provider,
+		reference,
+		data,
+		receivedAt,
+		transactionIDMNO,
+	)
+	if err != nil {
+		return fmt.Errorf("insert deposit_callback failed: %w", err)
+	}
+	tx.Commit(ctx)
+
+	return nil
 }
 
 // InsertIntoDepositLuckyRequestBonus inserts bonus deposit request
 func (db *Database) InsertIntoDepositLuckyRequestBonus(ctx context.Context, depositType, ussd, game, carrier string, gameCatID string, amount float64, msisdn, selectedBox, reference, channel string) (int64, error) {
-	query := `INSERT INTO "deposit_requests" 
+	query := `INSERT INTO payments.deposit_requests 
 	(deposit_type, status, transaction_id, description, ussd, game, carrier, channel, game_cat_id, amount, msisdn, selected_box, reference) 
 	VALUES ($1, 'success', $2, 'Free bets', $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 
@@ -1788,36 +2662,267 @@ func (db *Database) InsertIntoDepositLuckyRequestBonus(ctx context.Context, depo
 }
 
 // InsertIntoDepositLuckyRequestComplete inserts a deposit request similar to the Python async version
+
 func (db *Database) InsertIntoDepositLuckyRequestComplete(
 	ctx context.Context,
+	data map[string]interface{},
 	transactionID, description, game, carrier, channel, gameCatID string,
 	amount float64,
-	msisdn, selectedBox, reference string,
-) (int64, error) {
-
-	query := `INSERT INTO deposit_requests
-        (gateway, status, transaction_id, description, game, carrier, channel, game_cat_id, amount, msisdn, selected_box, reference)
-        VALUES ('direct deposit', 'success', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)` // equivalent to MySQL INSERT IGNORE
-
+	msisdn, selectedBox, reference string, playerID int64,
+) error {
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
-		log.Printf("Error acquiring connection: %v", err)
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+		return fmt.Errorf("acquire conn: %w", err)
 	}
 	defer conn.Release()
 
-	params := []interface{}{transactionID, description, game, carrier, channel, gameCatID, amount, msisdn, selectedBox, reference}
-
-	result, err := conn.Exec(ctx, query, params...)
+	tx, err := conn.Begin(ctx)
 	if err != nil {
-		log.Printf("Error inserting deposit request: %v", err)
-		return 0, fmt.Errorf("failed to insert deposit request: %w", err)
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	/* -----------------------------
+	   1️⃣ Update deposit_request
+	------------------------------ */
+	cmdTag, err := tx.Exec(
+		ctx,
+		`INSERT INTO payments.deposit_requests
+        (gateway, status, transaction_id, description, game, carrier, channel, game_cat_id, amount, msisdn, selected_box, reference)
+        VALUES ('direct deposit', 'success', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		transactionID, description, game, carrier, channel, gameCatID, amount, msisdn, selectedBox, reference,
+	)
+	if err != nil {
+		return fmt.Errorf("update deposit_request: %w", err)
 	}
 
-	rowsAffected := result.RowsAffected()
-	log.Printf("Deposit request inserted: ref=%s, rows_affected=%d", reference, rowsAffected)
+	if cmdTag.RowsAffected() == 0 {
+		return fmt.Errorf("deposit_request not found: %s", reference)
+	}
 
-	return rowsAffected, nil
+	/* -----------------------------
+	   2️⃣ Fetch deposit (partition-safe)
+	------------------------------ */
+	var depositID int64
+	var provider = carrier
+	var amountMinor = amount
+
+	err = tx.QueryRow(
+		ctx,
+		`INSERT INTO payments.deposits
+			(player_id, amount_minor, provider, external_ref, requested_at)
+		VALUES
+			($1,$2,$3,$4, NOW())
+		RETURNING deposit_id`,
+		playerID,
+		amount, // convert to minor units
+		carrier,
+		reference,
+	).Scan(&depositID)
+
+	/* -----------------------------
+	   3️⃣ Lock wallet
+	------------------------------ */
+	var walletID int64
+	var balanceMinor int64
+
+	err = tx.QueryRow(
+		ctx,
+		`
+		SELECT wallet_id, balance_minor
+		FROM wallet.wallets
+		WHERE player_id = $1
+		  AND currency = 'KES'
+		  AND type = 'real'
+		FOR UPDATE
+		`,
+		playerID,
+	).Scan(&walletID, &balanceMinor)
+
+	if err != nil {
+		return fmt.Errorf("wallet not found: %w", err)
+	}
+
+	// -------------------------------------------------
+	// 1️⃣ Resolve operator_id from operator_name
+	// -------------------------------------------------
+	var operatorID int64
+
+	err = tx.QueryRow(
+		ctx,
+		`
+	SELECT operator_id
+	FROM payments.mobile_operators
+	WHERE operator_name = $1
+	`,
+		carrier, // <-- operator name (e.g. "SAFARICOM", "AIRTEL")
+	).Scan(&operatorID)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("mobile operator not found: %s", carrier)
+		}
+		return fmt.Errorf("failed to fetch operator_id: %w", err)
+	}
+
+	// logrus.Infof("failed to fetch operator_id: %s", operatorID)
+
+	// // -------------------------------------------------
+	// // 2️⃣ Insert MNO deposit transaction
+	// // -------------------------------------------------
+	var transactionIDMNO int64
+
+	err = tx.QueryRow(
+		ctx,
+		`
+	INSERT INTO payments.transactions_log
+		(
+			deposit_id,
+			transaction_ref,
+			amount_minor,
+			status_description,
+			transaction_date,
+			account_reference,
+			operator_id,
+			raw_response
+		)
+	VALUES
+		($1,$2,$3,$4,NOW(),$5,$6,$7)
+	RETURNING transaction_id
+	`,
+		depositID,
+		transactionID,
+		amount, // minor units
+		description,
+		reference,
+		operatorID,
+		data,
+	).Scan(&transactionIDMNO)
+
+	if err != nil {
+		return fmt.Errorf("failed to insert transactions_log: %w", err)
+	}
+
+	newBalance := balanceMinor + utils.ToInt64(amountMinor)
+	/* -----------------------------
+	   4️⃣ Insert ledger (idempotent)
+	------------------------------ */
+	var ledgerID int64
+	var ledgerCreatedAt time.Time
+
+	err = tx.QueryRow(
+		ctx,
+		`
+		INSERT INTO wallet.ledger (
+			wallet_id, player_id, direction, type,
+			amount_minor, balance_after_minor,
+			reference_type, reference_id,
+			idempotency_key, description
+		)
+		VALUES (
+			$1,$2,'credit','deposit',
+			$3,$4,
+			'deposit',$5,
+			$6,$7
+		)
+		RETURNING entry_id, created_at
+		`,
+		walletID,
+		playerID,
+		amountMinor,
+		newBalance,
+		depositID,
+		reference,
+		"Deposit credited",
+	).Scan(&ledgerID, &ledgerCreatedAt)
+
+	if err != nil {
+		return fmt.Errorf("ledger insert failed: %w", err)
+	}
+
+	/* -----------------------------
+	   5️⃣ Update wallet
+	------------------------------ */
+	_, err = tx.Exec(
+		ctx,
+		`
+		UPDATE wallet.wallets
+		SET balance_minor = $1
+		WHERE wallet_id = $2
+		`,
+		newBalance,
+		walletID,
+	)
+	if err != nil {
+		return fmt.Errorf("wallet update failed: %w", err)
+	}
+	_, err = tx.Exec(
+		ctx,
+		`UPDATE core.kpi 
+			 SET handle = handle + $1, 
+				 ggr = handle - payout 
+			 WHERE DATE(created_on) = CURRENT_DATE
+		`,
+		amountMinor,
+	)
+	if err != nil {
+		return fmt.Errorf("wallet update failed: %w", err)
+	}
+
+	logrus.Infof("depositID=%T(%v), ledgerID=%T(%v), reference=%T(%v), transactionID=%T(%v)",
+		depositID, depositID,
+		ledgerID, ledgerID,
+		reference, reference,
+		transactionID, transactionID,
+	)
+
+	/* -----------------------------
+	   6️⃣ Update deposit
+	------------------------------ */
+	_, err = tx.Exec(
+		ctx,
+		`UPDATE payments.deposits
+		SET status = 'completed',
+			ledger_entry_id = $1,
+			ledger_entry_created_at = now(),
+			completed_at = now(),
+			transaction_ref = $2
+		WHERE deposit_id = $3`,
+		ledgerID,
+		transactionID,
+		depositID,
+	)
+	if err != nil {
+		return fmt.Errorf("deposit update failed: %w", err)
+	}
+	receivedAt := time.Now().UTC() // make sure it's in the correct partition
+
+	_, err = tx.Exec(
+		ctx,
+		`INSERT INTO payments.deposit_callbacks (
+			deposit_id,
+			deposit_requested_at,
+			provider,
+			external_ref,
+			payload,
+			received_at,
+		    mno_transaction_id,
+			transaction_date
+		)
+		VALUES ($1,  now(), $2, $3, $4, $5,$6, now())`,
+		depositID,
+		provider,
+		reference,
+		data,
+		receivedAt,
+		transactionIDMNO,
+	)
+	if err != nil {
+		return fmt.Errorf("insert deposit_callback failed: %w", err)
+	}
+	tx.Commit(ctx)
+
+	return nil
 }
 
 // CreateDepositRecordLucky creates a deposit record
@@ -1851,7 +2956,7 @@ func (db *Database) CreateDepositRecordLucky(ctx context.Context, msisdn string,
 
 // UpdateHousePawaBoxKeBasket updates basket amount
 func (db *Database) UpdateHousePawaBoxKeBasket(ctx context.Context, mvalue float64) (int64, error) {
-	query := `UPDATE "Basket" SET amount = amount + $1`
+	query := `UPDATE jackpot.pools SET amount = amount + $1`
 
 	log.Printf("Updating basket amount: +%.2f", mvalue)
 
@@ -2246,7 +3351,7 @@ func (db *Database) InsertIntoPendingWithdrawalsLucky(ctx context.Context, amoun
 
 // InsertIntoDepositRequest inserts into deposit requests
 func (db *Database) InsertIntoDepositRequest(ctx context.Context, amount float64, msisdn, reference string) (int64, error) {
-	query := `INSERT INTO "Aviator"."deposit_requests" (amount, msisdn, reference) VALUES ($1, $2, $3)`
+	query := `INSERT INTO payments.deposit_requests (amount, msisdn, reference) VALUES ($1, $2, $3)`
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -2367,7 +3472,7 @@ func (db *Database) CheckUSSDSessionLogs(ctx context.Context, msisdn string) (ma
 
 // CheckDepositRequestLuckyFailed checks if a deposit request exists by reference
 func (db *Database) CheckDepositRequestLuckyFailed(ctx context.Context, reference string) (map[string]interface{}, error) {
-	query := `SELECT * FROM "deposit_requests" WHERE reference = $1 `
+	query := `SELECT * FROM payments.deposit_requests WHERE reference = $1 `
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -2404,7 +3509,7 @@ func (db *Database) CheckDepositRequestLuckyFailed(ctx context.Context, referenc
 
 // CheckDepositRequests checks deposit requests
 func (db *Database) CheckDepositRequests(ctx context.Context, reference string) (map[string]interface{}, error) {
-	query := `SELECT * FROM "Aviator"."deposit_requests" WHERE reference = $1 AND status = 'pending' `
+	query := `SELECT * FROM payments.deposit_requests WHERE reference = $1 AND status = 'pending' `
 
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
@@ -2449,46 +3554,88 @@ func (db *Database) InsertIntoDepositLuckyRequest(
 	ussd, game, carrier string,
 	gameCatID string,
 	amount float64,
-	msisdn, selectedBox, reference, channel string,
+	msisdn, selectedBox, reference, channel string, playerID string,
 ) (int64, error) {
 
-	query := `INSERT INTO "deposit_requests" 
-          (ussd, game, carrier, channel, game_cat_id, amount, msisdn, selected_box, reference) 
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
-	// Acquire connection from pool
 	conn, err := db.pool.Acquire(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to acquire connection: %w", err)
+		return 0, fmt.Errorf("acquire conn: %w", err)
 	}
-	defer conn.Release() // Automatically release connection when function exits
+	defer conn.Release()
 
-	// Execute the query
-	_, err = conn.Exec(
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	/* -------------------------------
+	   1️⃣ Insert deposit_request
+	-------------------------------- */
+	var depositRequestID int64
+
+	err = tx.QueryRow(
 		ctx,
-		query,
-		ussd, game, carrier, channel, gameCatID, amount, utils.ToString(msisdn), utils.ToInt(selectedBox), reference,
-	)
+		`
+		INSERT INTO payments.deposit_requests
+			(ussd, game, carrier, channel, game_cat_id, amount, msisdn, selected_box, reference)
+		VALUES
+			($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		RETURNING id
+		`,
+		ussd,
+		game,
+		carrier,
+		channel,
+		gameCatID,
+		amount,
+		msisdn,
+		selectedBox,
+		reference,
+	).Scan(&depositRequestID)
+
 	if err != nil {
-		fmt.Errorf("Failed to insert deposit request: %v", err)
-		return 0, fmt.Errorf("failed to insert deposit request: %w", err)
+		return 0, fmt.Errorf("insert deposit_request: %w", err)
 	}
 
-	// If you need the last inserted ID instead of rows affected:
-	// Note: This depends on your database driver. For PostgreSQL with pgx:
-	var lastInsertID int64
-	err = conn.QueryRow(ctx, "SELECT LASTVAL()").Scan(&lastInsertID)
+	/* -------------------------------
+	   2️⃣ Insert deposit
+	-------------------------------- */
+	var depositID int64
+
+	err = tx.QueryRow(
+		ctx,
+		`
+		INSERT INTO payments.deposits
+			(player_id, amount_minor, provider, external_ref, requested_at)
+		VALUES
+			($1,$2,$3,$4, NOW())
+		RETURNING deposit_id
+		`,
+		playerID,
+		amount, // convert to minor units
+		carrier,
+		reference,
+	).Scan(&depositID)
+
 	if err != nil {
-		fmt.Errorf("Failed to get last insert ID: %v", err)
-		return 0, fmt.Errorf("failed to get last insert ID: %w", err)
+		return 0, fmt.Errorf("insert deposit: %w", err)
 	}
 
-	fmt.Printf("Successfully inserted deposit request with ID: %d", lastInsertID)
-	return lastInsertID, nil
+	/* -------------------------------
+	   3️⃣ Commit transaction
+	-------------------------------- */
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return depositRequestID, nil
+
 }
 
 // InsertSTK inserts into STK queue
 func (db *Database) InsertSTK(ctx context.Context, game, carrier, reference, msisdn string, amount float64, shortcode string) (int64, error) {
-	query := `INSERT INTO "stk_queue_ke" 
+	query := `INSERT INTO payments.stk_queue 
 			 (game, carrier, reference, msisdn, amount, account, shortcode) 
 			 VALUES ($1, $2, $3, $4, $5, $6, $7)`
 
@@ -2576,7 +3723,7 @@ func (db *Database) UpdateHouseLuckyWins(ctx context.Context, mvalue float64) (i
 
 // UpdateHouseLuckyBasketWins deducts amount from basket for wins
 func (db *Database) UpdateHouseLuckyBasketWins(ctx context.Context, mvalue float64) (bool, error) {
-	query := `UPDATE "Basket" 
+	query := `UPDATE jackpot.pools 
 	SET amount = amount - $1 
 	WHERE amount >= $1` // Ensure we don't go negative
 
@@ -2609,7 +3756,7 @@ func (db *Database) UpdateHouseLuckyBasketWins(ctx context.Context, mvalue float
 
 // UpdateRESTLossUser updates player payout and resets loss count
 func (db *Database) UpdateRESTLossUser(ctx context.Context, payout float64, id int64) (int64, error) {
-	query := `UPDATE "Player" 
+	query := `UPDATE core.players 
 	SET payout = payout + $1, lost_count = 0 
 	WHERE id = $2`
 
@@ -2818,7 +3965,7 @@ func (db *Database) UpdatePawaBoxKeWithdrawalDisburse(ctx context.Context, trans
 
 // UpdateAviatorDepositFailRequestLucky updates deposit request to failed status
 func (db *Database) UpdateAviatorDepositFailRequestLucky(ctx context.Context, reference, description string) (int64, error) {
-	query := `UPDATE "deposit_requests" 
+	query := `UPDATE payments.deposit_requests 
 	SET status = 'fail', description = $1 
 	WHERE reference = $2`
 

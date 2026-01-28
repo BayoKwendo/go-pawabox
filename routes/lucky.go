@@ -8,16 +8,16 @@ import (
 )
 
 func RegisterRoutes(app *fiber.App) {
-	api := app.Group("/api/v1")
+	api := app.Group("/api/v2")
 
 	api.Get("/", controllers.Hello)
 	api.Get("/test", controllers.Test)
 	api.Post("/place_bet_pawabox", utils.JWTMiddleware(), controllers.PlaceBetLuckyNumber)
 	api.Post("/settle_bt_luckynumber", controllers.SettleBTLuckyNumber)
-	api.Post("/settle_transaction", controllers.SettleBetLuckyNumber)
 
 	api.Post("/place_bet_spin", utils.JWTMiddleware(), controllers.PlaceBetSpin)
 
+	api.Post("/settle_transaction", controllers.SettleBetLuckyNumber)
 	api.Post("/initiate_deposit", utils.JWTMiddleware(), controllers.IniatateDepositLuckyNumber)
 
 	api.Post("/settle_withdrawal", controllers.SettleWithdrawalLuckyNumber)

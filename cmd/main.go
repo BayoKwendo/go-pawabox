@@ -169,7 +169,7 @@ func main() {
 		_ = os.Mkdir(uploadDir, 0755)
 	}
 	log.Println("Serving images from:", uploadDir)
-	
+
 	app.Get("/image/:name", func(c *fiber.Ctx) error {
 		filename := path.Base(c.Params("name")) // prevent ../../ attacks
 		fullPath := filepath.Join(uploadDir, filename)

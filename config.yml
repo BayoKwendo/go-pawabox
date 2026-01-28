@@ -6,3 +6,7 @@ production:
       username: game
       password: 123dss9393weqw
       database: PawaBox_Ke
+
+
+# 0 0 * * * psql -U your_user -d PawaBox_Ke -c "INSERT INTO core.kpi (date) VALUES (now());"
+

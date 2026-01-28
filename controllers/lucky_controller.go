@@ -94,7 +94,11 @@ func PlaceBetLuckyNumber(c *fiber.Ctx) error {
 	var req PlaceBetRequest
 
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
+
+	session_id := userClaims["session_id"].(string) // get MSISDN
+
+	session_start := userClaims["session_start"].(string) // get MSISDN
 
 	if err := c.BodyParser(&req); err != nil {
 		log.Printf("invalid json: %v", err)
@@ -151,6 +155,8 @@ func PlaceBetLuckyNumber(c *fiber.Ctx) error {
 
 		// place bet
 		result, err := lucky.PlaceBet(
+			session_id,
+			session_start,
 			user,
 			req.Ussd,
 			utils.ToString(setting["name"]),
@@ -183,6 +189,7 @@ func PlaceBetLuckyNumber(c *fiber.Ctx) error {
 }
 
 func IniatateDepositLuckyNumber(c *fiber.Ctx) error {
+
 	var req IniatateDepositRequest
 	if err := c.BodyParser(&req); err != nil {
 		log.Printf("invalid json: %v", err)
@@ -190,15 +197,18 @@ func IniatateDepositLuckyNumber(c *fiber.Ctx) error {
 	}
 
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string)     // get MSISDN
+	user_id := userClaims["player_id"].(string) // get MSISDN
+	log.Printf("Error placing bet: %v", "err")
 
 	// place bet
 	result, err := lucky.IniatatDeposit(
 		utils.ToString(msisdn),
 		req.Amount,
+		user_id,
 		req.Channel)
+
 	if err != nil {
-		log.Printf("Error placing bet: %v", err)
 		return c.Status(500).JSON(models.NewErrorResponse(500, 1, err.Error()))
 	}
 
@@ -219,9 +229,9 @@ func SettleBTLuckyNumber(c *fiber.Ctx) error {
 	}
 	// launch in background
 	go func(d map[string]interface{}) {
-		if err := lucky.HandleDepositAndGame(d); err != nil {
-			logrus.Errorf("handle_deposit_and_game error: %v", err)
-		}
+		// if err := lucky.HandleDepositAndGame(d); err != nil {
+		// 	logrus.Errorf("handle_deposit_and_game error: %v", err)
+		// }
 	}(data)
 
 	return c.Status(200).JSON(models.NewSuccess(200, 0, "Success"))
@@ -253,7 +263,7 @@ func SettleBetLuckyNumber(c *fiber.Ctx) error {
 	if status == "0" || strings.EqualFold(status, "success") {
 		go func(d map[string]interface{}) {
 			if _, err := lucky.ProcessBetAndPlayGame(d); err != nil {
-				logrus.Errorf("process_bet_and_play_game error: %v", err)
+				logrus.Errorf("process_bet_and_play_game evvvvrror: %v", err)
 			}
 		}(data)
 		return c.Status(200).JSON(models.NewSuccess(200, 0, "Success"))
@@ -323,10 +333,11 @@ func GetGames(c *fiber.Ctx) error {
 	if userVal == nil {
 
 		game, err := lucky.CheckGame(category)
+		logrus.Error(err)
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{
 				"Status":  false,
-				"Message": "failed to fetch history",
+				"Message": "failed to fetch games",
 			})
 		}
 
@@ -349,7 +360,7 @@ func GetGames(c *fiber.Ctx) error {
 		// guest user
 		userClaims := userVal.(jwt.MapClaims)
 
-		msisdn := userClaims["sub"].(string) // get MSISDN
+		msisdn := userClaims["msisdn"].(string) // get MSISDN
 
 		// Create context with timeout for all operations
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -392,6 +403,7 @@ func Login(c *fiber.Ctx) error {
 	}
 	msisdn := utils.ToString(data["msisdn"])
 
+	logrus.Info("djdjfjjfj")
 	if msisdn != "" && len(msisdn) > 0 {
 
 		name := utils.ToString(data["name"])
@@ -450,6 +462,15 @@ func Login(c *fiber.Ctx) error {
 			if user == nil {
 				return err
 			}
+
+			if utils.ToString(user["status"]) == "closed" {
+				return c.Status(202).JSON(models.NewErrorResponse(202, 1, "user account is closed"))
+			}
+
+			if utils.ToString(user["status"]) == "self_excluded" {
+				return c.Status(202).JSON(models.NewErrorResponse(202, 1, "user account currently is self excluded"))
+			}
+
 			err = lucky.InsertVerification(msisdn, code, expired, created)
 			if err != nil {
 				return err
@@ -471,12 +492,12 @@ func Login(c *fiber.Ctx) error {
 			if user == nil {
 				return err
 			}
-			if utils.ToString(user["active_status"]) == "inactive" {
-				return c.Status(202).JSON(models.NewErrorResponse(202, 1, "user account not found"))
+			if utils.ToString(user["status"]) == "closed" {
+				return c.Status(202).JSON(models.NewErrorResponse(202, 1, "user account is closed"))
 			}
 
-			if utils.ToString(user["self_exclusion"]) == "YES" {
-				return c.Status(202).JSON(models.NewErrorResponse(202, 1, "user account is inactive"))
+			if utils.ToString(user["status"]) == "self_excluded" {
+				return c.Status(202).JSON(models.NewErrorResponse(202, 1, "user account currently is self excluded"))
 			}
 
 			err = lucky.InsertVerification(msisdn, code, expired, created)
@@ -535,7 +556,7 @@ func RequestSelfExlusion(c *fiber.Ctx) error {
 	var data map[string]interface{}
 
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
 	if err := c.BodyParser(&data); err != nil {
 		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
 	}
@@ -604,7 +625,7 @@ func VerySelfExlusion(c *fiber.Ctx) error {
 	}
 
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
 	opt := utils.ToString(data["otp"])
 	// Call service to verify OTP — returns remaining seconds until expiry
 	verifyRemain, err := lucky.VerifyOTP(msisdn, opt)
@@ -641,13 +662,13 @@ func VerySelfExlusion(c *fiber.Ctx) error {
 		"Units":         "Seconds", // client-friendly TTL
 		"StatusMessage": "Success",
 	})
-
 }
+
 func GetUser(c *fiber.Ctx) error {
 
 	// Get the JWT claims set by middleware
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
 	// role := userClaims["role"].(string)  // optional
 	// msisdn := utils.ToString(data["msisdn"])
 	user, err := lucky.CheckUser(msisdn, "", "")
@@ -673,7 +694,7 @@ func GetDepositHandler(c *fiber.Ctx) error {
 
 	// Get the JWT claims set by middleware
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
 
 	if err := c.BodyParser(&data); err != nil {
 	}
@@ -712,7 +733,7 @@ func GetWithdrawalHandler(c *fiber.Ctx) error {
 
 	// Get the JWT claims set by middleware
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
 
 	if err := c.BodyParser(&data); err != nil {
 	}
@@ -751,7 +772,7 @@ func GetHistoryHandler(c *fiber.Ctx) error {
 
 	// Get the JWT claims set by middleware
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
 
 	if err := c.BodyParser(&data); err != nil {
 	}
@@ -792,7 +813,7 @@ func GetGameHistoryHandler(c *fiber.Ctx) error {
 
 	// Get the JWT claims set by middleware
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
 
 	if err := c.BodyParser(&data); err != nil {
 	}
@@ -854,7 +875,7 @@ func GetYear(c *fiber.Ctx) error {
 func UpdateUser(c *fiber.Ctx) error {
 	// Get the JWT claims set by middleware
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	player_id := userClaims["player_id"].(string) // get MSISDN
 	var data map[string]interface{}
 	if err := c.BodyParser(&data); err != nil {
 		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
@@ -967,7 +988,7 @@ func UpdateUser(c *fiber.Ctx) error {
 	// 		})
 	// 	}
 	// } else {
-	err := lucky.UpdateUser(msisdn, name)
+	err := lucky.UpdateUser(player_id, name)
 	if err != nil {
 		return err
 	}
@@ -983,7 +1004,7 @@ func UpdateUser(c *fiber.Ctx) error {
 func DeleteUser(c *fiber.Ctx) error {
 	// Get the JWT claims set by middleware
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
 
 	// var data map[string]interface{}
 	// if err := c.BodyParser(&data); err != nil {
@@ -1007,7 +1028,7 @@ func DeleteUser(c *fiber.Ctx) error {
 func UpdateUserWinStatus(c *fiber.Ctx) error {
 	// Get the JWT claims set by middleware
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
 
 	var data map[string]interface{}
 	if err := c.BodyParser(&data); err != nil {
@@ -1036,7 +1057,9 @@ func UpdateUserProfilePic(c *fiber.Ctx) error {
 	}
 
 	userClaims := userVal.(jwt.MapClaims)
-	msisdn, ok := userClaims["sub"].(string)
+
+	// logrus.Infof(userClaims["player_id"])
+	player_id, ok := userClaims["player_id"].(string)
 	if !ok {
 		return c.Status(401).JSON(models.NewErrorResponse(401, 1, "invalid token"))
 	}
@@ -1049,7 +1072,7 @@ func UpdateUserProfilePic(c *fiber.Ctx) error {
 		if _, err := os.Stat(uploadDir); os.IsNotExist(err) {
 			_ = os.Mkdir(uploadDir, 0755)
 		}
-		filename := fmt.Sprintf("%s_%d_%s", msisdn, time.Now().Unix(), file.Filename)
+		filename := fmt.Sprintf("%s_%d_%s", player_id, time.Now().Unix(), file.Filename)
 		filePath := path.Join(uploadDir, filename)
 
 		if err := c.SaveFile(file, filePath); err != nil {
@@ -1059,7 +1082,7 @@ func UpdateUserProfilePic(c *fiber.Ctx) error {
 		// Optionally store file path in DB
 		logrus.Infof("File uploaded: %s", filePath)
 		// Update win status
-		if err := lucky.UpdateUserProfilePic(msisdn, filename); err != nil {
+		if err := lucky.UpdateUserProfilePic(player_id, filename); err != nil {
 			return err
 		}
 		return c.Status(200).JSON(models.H{
@@ -1081,8 +1104,7 @@ func VerifyOTP(c *fiber.Ctx) error {
 		logrus.Error("lucky service not initialized")
 		return c.Status(500).JSON(models.NewErrorResponse(500, 1, "internal server error"))
 	}
-	var attempteduser map[string]interface{}
-
+	// var attempteduser map[string]interface{}
 	var data map[string]interface{}
 	if err := c.BodyParser(&data); err != nil {
 		return c.Status(400).JSON(models.NewErrorResponse(400, 1, "invalid JSON"))
@@ -1090,11 +1112,11 @@ func VerifyOTP(c *fiber.Ctx) error {
 
 	msisdn := utils.ToString(data["msisdn"])
 	opt := utils.ToString(data["otp"])
+	channel := "web"
 	// Call service to verify OTP — returns remaining seconds until expiry
 	verifyRemain, err := lucky.VerifyOTP(msisdn, opt)
 	if err != nil {
 		// Distinguish invalid vs expired for better messages if you want
-		// Here we follow your earlier style: return 201 with message for invalid/expired
 		// but it's more idiomatic to return 4xx
 		logrus.Warnf("VerifyOTP error for %s: %v", msisdn, err)
 		return c.Status(201).JSON(models.H{
@@ -1102,15 +1124,6 @@ func VerifyOTP(c *fiber.Ctx) error {
 			"StatusCode":    2,
 			"StatusMessage": err.Error(),
 		})
-	}
-	attempteduser, err = lucky.CheckUserNoCreatingAttempted(msisdn)
-	if attempteduser != nil {
-		new_msisdn := utils.ToString(attempteduser["new_msisdn"])
-		msisdn := utils.ToString(attempteduser["msisdn"])
-		err = lucky.UpdateMsisdn(msisdn, new_msisdn)
-		if err != nil {
-			return err
-		}
 	}
 
 	// Ensure user exists
@@ -1138,15 +1151,26 @@ func VerifyOTP(c *fiber.Ctx) error {
 	}
 
 	// token expiry duration — adjust as needed
-	expireDuration := 48 * time.Hour
-	now := time.Now()
-	claims := jwt.MapClaims{
-		"sub":  msisdn,
-		"iat":  now.Unix(),
-		"exp":  now.Add(expireDuration).Unix(),
-		"role": "user", // optional; change or remove as needed
-	}
 
+	hours := 48
+	expireDuration := 48 * time.Hour
+
+	now := time.Now()
+
+	sessionid, err := lucky.InsertSessionID(utils.ToInt64(user["player_id"]), channel, utils.ToInt64(hours), now)
+
+	// logrus.Infof(utils.ToString(expireDuration))
+	ts := now.Format(time.RFC3339Nano)
+	claims := jwt.MapClaims{
+		"sub":           msisdn, // subject (can stay as msisdn)
+		"msisdn":        msisdn,
+		"session_id":    utils.ToString(sessionid),
+		"session_start": ts,                                // explicit msisdn
+		"player_id":     utils.ToString(user["player_id"]), // BIGINT → int64 is fine
+		"iat":           now.Unix(),                        // issued at
+		"exp":           now.Add(expireDuration).Unix(),
+		"role":          "user", // optional
+	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(secret))
 	if err != nil {
@@ -1303,7 +1327,11 @@ func PlaceBetSpin(c *fiber.Ctx) error {
 	var req PlaceSpinRequest
 
 	userClaims := c.Locals("user").(jwt.MapClaims)
-	msisdn := userClaims["sub"].(string) // get MSISDN
+
+	msisdn := userClaims["msisdn"].(string) // get MSISDN
+
+	session_id := userClaims["session_id"].(string)       // get MSISDN
+	session_start := userClaims["session_start"].(string) // get MSISDN
 
 	if err := c.BodyParser(&req); err != nil {
 		log.Printf("invalid json: %v", err)
@@ -1342,15 +1370,25 @@ func PlaceBetSpin(c *fiber.Ctx) error {
 	f, _ := num.Float64Value()
 	balance := f.Float64
 	amount := utils.ToFloat64(req.Amount)
+	logrus.Infof("balance (raw): %v", balance)                        // works for interface{}
+	logrus.Infof("balance (float64): %.2f", utils.ToFloat64(balance)) // nicely formatted float
 
+	if utils.ToFloat64(setting["bet_amount"]) > amount {
+		return c.Status(202).JSON(models.H{
+			"Status":        202,
+			"StatusCode":    3,
+			"StatusMessage": "Low Amount! Bet with at least " + fmt.Sprintf("%v", setting["bet_amount"]),
+		})
+	}
 	if balance >= amount {
 
 		logrus.Infof("rtpLimit : %s", amount)
-
 		logrus.Infof("rtpLimit : %s", user)
 
 		// place bet
 		result, err := lucky.PlaceBetSpin(
+			session_id,
+			session_start,
 			user,
 			utils.ToString(req.GameCatID),
 			utils.ToString(msisdn),
